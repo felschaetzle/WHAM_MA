@@ -18,7 +18,7 @@ class PATHS:
     THREEDPW_PTH = f'{root}/3DPW'
     HUMAN36M_PTH = f'{root}/Human36M'
     RICH_PTH = f'{root}/RICH'
-    EMDB_PTH = f'{root}/EMDB'
+    EMDB_PTH = f'/mnt/hdd/emdb_dataset'
     
     # Processed labels
     AMASS_LABEL = f'{root}/parsed_data/amass.pth'
