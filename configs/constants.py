@@ -8,6 +8,8 @@ IMG_FEAT_DIM = {
     'resnet': 2048,
     'vit': 1024
 }
+subject_id = "P5"
+sequence_id = "43"
 
 N_JOINTS = 17
 root = 'dataset'
@@ -19,6 +21,7 @@ class PATHS:
     HUMAN36M_PTH = f'{root}/Human36M'
     RICH_PTH = f'{root}/RICH'
     EMDB_PTH = f'/mnt/hdd/emdb_dataset'
+    WHAM_OUTPUT = 'output/emdb'
     
     # Processed labels
     AMASS_LABEL = f'{root}/parsed_data/amass.pth'

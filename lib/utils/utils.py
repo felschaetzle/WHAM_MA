@@ -203,6 +203,7 @@ def prepare_output_dir(cfg, cfg_file):
     # ==== create logdir
     logdir = osp.join(cfg.OUTPUT_DIR, cfg.EXP_NAME)
     os.makedirs(logdir, exist_ok=True)
+    print(os.getcwd())
     shutil.copy(src=cfg_file, dst=osp.join(cfg.OUTPUT_DIR, 'config.yaml'))
 
     cfg.LOGDIR = logdir

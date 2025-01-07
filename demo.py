@@ -20,6 +20,9 @@ from lib.models.preproc.detector import DetectionModel
 from lib.models.preproc.extractor import FeatureExtractor
 from lib.models.smplify import TemporalSMPLify
 
+from custom_utils import get_sequence_root
+from configs import constants as _C
+
 try: 
     from lib.models.preproc.slam import SLAMModel
     _run_global = True
@@ -176,14 +179,18 @@ def run(cfg,
         with torch.no_grad():
             run_vis_on_demo(cfg, video, results, output_pth, network.smpl, vis_global=run_global)
         
+
 if __name__ == '__main__':
+    subject_id = _C.subject_id
+    sequence_id = _C.sequence_id
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--video', type=str, 
-                        default='examples/demo_video.mp4', 
+                        default='/mnt/hdd/emdb_dataset/P5/40_indoor_walk_big_circle/raw.mov', 
                         help='input video path or youtube link')
 
-    parser.add_argument('--output_pth', type=str, default='output/demo', 
+    parser.add_argument('--output_pth', type=str, default='output/emdb', 
                         help='output folder to write results')
     
     parser.add_argument('--calib', type=str, default=None, 
@@ -195,11 +202,23 @@ if __name__ == '__main__':
     parser.add_argument('--visualize', action='store_true',
                         help='Visualize the output mesh if True')
     
-    parser.add_argument('--save_pkl', action='store_true',
+    parser.add_argument('--save_pkl', action='store_true', default=True,
                         help='Save output as pkl file')
     
     parser.add_argument('--run_smplify', action='store_true',
                         help='Run Temporal SMPLify for post processing')
+    
+    parser.add_argument("--subject", type=str, default=subject_id, help="The subject ID, P0 - P9.")
+
+    parser.add_argument(
+        "--sequence",
+        type=str,
+        default=sequence_id,
+        help="The sequence ID. This can be any unambiguous prefix of the sequence's name, i.e. for the "
+        "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
+    )
+
+
 
     args = parser.parse_args()
 
@@ -215,13 +234,18 @@ if __name__ == '__main__':
     network = build_network(cfg, smpl)
     network.eval()
     
+    sequence_root = get_sequence_root(args)
+    video_path = glob(os.path.join(sequence_root, "*raw.mov"))[0]
+
+
+
     # Output folder
-    sequence = '.'.join(args.video.split('/')[-1].split('.')[:-1])
+    sequence = args.subject + "_" + args.sequence
     output_pth = osp.join(args.output_pth, sequence)
     os.makedirs(output_pth, exist_ok=True)
     
     run(cfg, 
-        args.video, 
+        video_path, 
         output_pth, 
         network, 
         args.calib, 

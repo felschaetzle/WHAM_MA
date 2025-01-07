@@ -21,7 +21,7 @@ cfg.FLIP_EVAL = False
 cfg.TRAIN = CN()
 cfg.TRAIN.STAGE = 'stage1'
 cfg.TRAIN.DATASET_EVAL = '3dpw'
-cfg.TRAIN.CHECKPOINT = ''
+cfg.TRAIN.CHECKPOINT = 'checkpoints/wham_vit_w_3dpw.pth.tar'
 cfg.TRAIN.BATCH_SIZE = 64
 cfg.TRAIN.START_EPOCH = 0
 cfg.TRAIN.END_EPOCH = 999
@@ -90,11 +90,11 @@ def bool_arg(value):
 
 def parse_args(test=False):
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--cfg', type=str, default='./configs/debug.yaml', help='cfg file path')
+    parser.add_argument('-c', '--cfg', type=str, default='./configs/yamls/demo.yaml', help='cfg file path')
     parser.add_argument(
         "--eval-set", type=str, default='3dpw', help="Evaluation dataset")
     parser.add_argument(
-        "--eval-split", type=str, default='test', help="Evaluation data split")
+        "--eval-split", type=str, default='2', help="Evaluation data split")
     parser.add_argument('--render', default=False, type=bool_arg,
                         help='Render SMPL meshes after the evaluation')
     parser.add_argument('--save-results', default=False, type=bool_arg,

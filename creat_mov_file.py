@@ -1,6 +1,10 @@
 import cv2
 import os
 
+from custom_utils import get_sequence_root
+from configs import constants as _C
+import argparse
+
 def create_video_from_frames(frames_dir, output_file, fps=30):
     """
     Creates a .mov video file from a directory of frames.
@@ -18,7 +22,7 @@ def create_video_from_frames(frames_dir, output_file, fps=30):
         [os.path.join(frames_dir, f) for f in os.listdir(frames_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
     )
 
-    frame_files = frame_files[:250]
+    # frame_files = frame_files[:250]
     if not frame_files:
         raise ValueError("No valid image frames found in the directory!")
 
@@ -44,8 +48,31 @@ def create_video_from_frames(frames_dir, output_file, fps=30):
 
 if __name__ == "__main__":
     # Configuration: Set your directory and output file
-    frames_directory = "/mnt/hdd/emdb_dataset/P5/40_indoor_walk_big_circle/images"  # Replace with the path to your frames directory
-    output_mov_file = "/mnt/hdd/emdb_dataset/P5/40_indoor_walk_big_circle/raw_shorter.mov"  # Replace with the desired output .mov file path
+
+    def_subject = "P5"
+    def_sequence = "43"
+
+    parser = argparse.ArgumentParser()
+    
+    parser.add_argument("--subject", type=str, default=_C.subject_id, help="The subject ID, P0 - P9.")
+
+    parser.add_argument(
+        "--sequence",
+        type=str,
+        default=_C.sequence_id,
+        help="The sequence ID. This can be any unambiguous prefix of the sequence's name, i.e. for the "
+        "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
+    )
+
+    args = parser.parse_args()
+    
+    root = "/mnt/hdd/emdb_dataset/"
+
+
+    sequence_root = get_sequence_root(args, gt=True)
+
+    frames_directory = sequence_root + "/images"  # Replace with the path to your frames directory
+    output_mov_file = sequence_root + "/raw.mov"  # Replace with the desired output .mov file path
     frames_per_second = 30  # Adjust as needed
 
     create_video_from_frames(frames_directory, output_mov_file, fps=frames_per_second)

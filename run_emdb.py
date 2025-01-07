@@ -7,9 +7,10 @@ import subprocess
 command = [
     "python", 
     "demo.py", 
-    "--video", 
-    "/mnt/hdd/emdb_dataset/P5/40_indoor_walk_big_circle/raw_short.mov",
-    "--visualize"
+    "--subject",
+    "P4",
+    "--sequence",
+    "35"
 ]
 
 # Run the command

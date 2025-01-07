@@ -330,6 +330,8 @@ def global_align_joints(gt_joints, pred_joints):
     pred_glob = (
         s_glob * torch.einsum("ij,tnj->tni", R_glob, pred_joints) + t_glob[None, None]
     )
+    print("global align")
+    print(s_glob, R_glob, t_glob)
     return pred_glob
 
 
@@ -480,3 +482,50 @@ def compute_rte(target_trans, pred_trans):
     
     # Normalize it to the displacement
     return (rte / disp).numpy()
+
+def compute_pred_trans_hat(target_trans, pred_trans):
+    # Compute the global alignment
+    s, rot, trans = align_pcl(target_trans[None, :], pred_trans[None, :], fixed_scale=True)
+    # trans[0][2] = -5
+    pred_trans_hat = (
+        s * torch.einsum("tij,tnj->tni", rot, pred_trans[None, :]) + trans[None, :]
+    )[0]
+    
+    print("trans align")
+    print(s, rot, trans)
+    return pred_trans_hat.numpy(), rot
+
+def align_extrinsics(Y, X, weight=None, fixed_scale=False):
+    """
+    Align similarity transform to align X with Y using Umeyama method.
+    Aligns 4x4 extrinsic matrices.
+    
+    X' = s * R * X + t is aligned with Y
+    
+    :param Y: (*, N, 4, 4) first set of extrinsics
+    :param X: (*, N, 4, 4) second set of extrinsics
+    :param weight: (*, N, 1) optional weight of valid correspondences
+    :param fixed_scale: Whether to use fixed scaling (default=False)
+    :returns: (*, 1), (*, 3, 3), (*, 3), (*, N, 4, 4) aligned transformations
+    """
+    # Extract translation and rotation components
+    Y_rot = Y[..., :3, :3]
+    Y_trans = Y[..., :3, 3]
+
+    X_rot = X[..., :3, :3]
+    X_trans = X[..., :3, 3]
+
+    # Align translations using Umeyama
+    s, R, t = align_pcl(Y_trans[..., None, :], X_trans[..., None, :], weight, fixed_scale)
+
+    # Apply the rotation and scaling to align the rotations
+    X_rot_aligned = torch.matmul(R[..., None, :, :], X_rot)
+    X_trans_aligned = s[..., None, None] * torch.matmul(R, X_trans[..., :, None])[..., 0] + t
+
+    # Reconstruct the aligned 4x4 transformation matrices
+    aligned_X = torch.zeros_like(X)
+    aligned_X[..., :3, :3] = X_rot_aligned
+    aligned_X[..., :3, 3] = X_trans_aligned
+    aligned_X[..., 3, 3] = 1.0
+
+    return s, R, t, aligned_X

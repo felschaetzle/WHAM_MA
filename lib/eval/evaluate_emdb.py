@@ -11,6 +11,10 @@ from smplx import SMPL
 from loguru import logger
 from progress.bar import Bar
 
+import sys
+sys.path.append('/home/felix/WHAM_MA')
+print(sys.path)
+
 from configs import constants as _C
 from configs.config import parse_args
 from lib.data.dataloader import setup_eval_dataloader
@@ -26,7 +30,7 @@ from lib.eval.eval_utils import (
     global_align_joints,
     compute_rte,
     compute_jitter,
-    compute_foot_sliding
+    compute_foot_sliding,
     batch_compute_similarity_transform_torch,
 )
 from lib.utils import transforms
