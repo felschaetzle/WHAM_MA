@@ -9,7 +9,7 @@ IMG_FEAT_DIM = {
     'vit': 1024
 }
 subject_id = "P5"
-sequence_id = "43"
+sequence_id = "40"
 
 N_JOINTS = 17
 root = 'dataset'

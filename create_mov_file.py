@@ -17,6 +17,7 @@ def create_video_from_frames(frames_dir, output_file, fps=30):
     Raises:
         ValueError: If no valid frames are found in the directory.
     """
+    print("Start processing ", frames_dir)
     # Get a sorted list of all image files in the directory
     frame_files = sorted(
         [os.path.join(frames_dir, f) for f in os.listdir(frames_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
@@ -68,11 +69,15 @@ if __name__ == "__main__":
     
     root = "/mnt/hdd/emdb_dataset/"
 
-
     sequence_root = get_sequence_root(args, gt=True)
 
     frames_directory = sequence_root + "/images"  # Replace with the path to your frames directory
     output_mov_file = sequence_root + "/raw.mov"  # Replace with the desired output .mov file path
     frames_per_second = 30  # Adjust as needed
 
-    create_video_from_frames(frames_directory, output_mov_file, fps=frames_per_second)
+
+    if not os.path.exists(output_mov_file):
+        create_video_from_frames(frames_directory, output_mov_file, fps=frames_per_second)
+        print("Done creating ", output_mov_file)
+    else:
+        print("MOVE FILE ALREADY EXISTS!")

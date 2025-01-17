@@ -23,6 +23,8 @@ from lib.models.smplify import TemporalSMPLify
 from custom_utils import get_sequence_root
 from configs import constants as _C
 
+from scipy.spatial.transform import Rotation as R
+
 try: 
     from lib.models.preproc.slam import SLAMModel
     _run_global = True
@@ -48,10 +50,26 @@ def run(cfg,
     # Whether or not estimating motion in global coordinates
     run_global = run_global and _run_global
     
+    print(args.gt_extrinsics, calib)
+
+    if args.gt_extrinsics and calib is not None:
+        logger.error("Arguments gt_extrinsics and calib can not be provided at the same time. Either use gt intrinsics with DPVO by passing the calib arg or gt extrinsics directly!")
+        return
+
+    run_preproc = True
+    if calib is None:
+        if (osp.exists(osp.join(output_pth, 'tracking_results.pth')) and 
+                osp.exists(osp.join(output_pth, 'slam_results.pth'))):
+            run_preproc = False
+    else:
+        if (osp.exists(osp.join(output_pth, 'tracking_results_gt_intrinsics.pth')) and 
+                osp.exists(osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))):
+            run_preproc = False
+
+
     # Preprocess
     with torch.no_grad():
-        if not (osp.exists(osp.join(output_pth, 'tracking_results.pth')) and 
-                osp.exists(osp.join(output_pth, 'slam_results.pth'))):
+        if run_preproc:
             
             detector = DetectionModel(cfg.DEVICE.lower())
             extractor = FeatureExtractor(cfg.DEVICE.lower(), cfg.FLIP_EVAL)
@@ -87,16 +105,37 @@ def run(cfg,
             logger.info('Complete Data preprocessing!')
             
             # Save the processed data
-            joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results.pth'))
-            joblib.dump(slam_results, osp.join(output_pth, 'slam_results.pth'))
-            logger.info(f'Save processed data at {output_pth}')
+            if calib is None:
+                joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results.pth'))
+                joblib.dump(slam_results, osp.join(output_pth, 'slam_results.pth'))
+                logger.info(f'Save processed data at {output_pth}')
+            else:
+                joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results_gt_intrinsics.pth'))
+                joblib.dump(slam_results, osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
+                logger.info(f'Save processed data at {output_pth}')
         
         # If the processed data already exists, load the processed data
         else:
-            tracking_results = joblib.load(osp.join(output_pth, 'tracking_results.pth'))
-            slam_results = joblib.load(osp.join(output_pth, 'slam_results.pth'))
-            logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
+            if calib is None:
+                tracking_results = joblib.load(osp.join(output_pth, 'tracking_results.pth'))
+                slam_results = joblib.load(osp.join(output_pth, 'slam_results.pth'))
+                logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
+            else:
+                tracking_results = joblib.load(osp.join(output_pth, 'tracking_results_gt_intrinsics.pth'))
+                slam_results = joblib.load(osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
+                logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
     
+
+    if args.gt_extrinsics:
+        sequence_root = get_sequence_root(args, gt=True)
+        gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
+        gt_data = joblib.load(gt_data_path)
+        gt_extrinsics = gt_data["camera"]["extrinsics"]
+        gt_extrinsics = np.linalg.inv(gt_extrinsics)
+        gt_extrinsics_rot = R.from_matrix(gt_extrinsics[:,:3,:3]).as_quat()
+        gt_extrinsics = np.concatenate([gt_extrinsics[:,:3,3], gt_extrinsics_rot], axis=1)
+        slam_results = gt_extrinsics
+
     # Build dataset
     dataset = CustomDataset(cfg, tracking_results, slam_results, width, height, fps)
     
@@ -171,7 +210,12 @@ def run(cfg,
         results[_id]['frame_ids'] = frame_id
     
     if save_pkl:
-        joblib.dump(results, osp.join(output_pth, "wham_output.pkl"))
+        if args.gt_extrinsics:
+            joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera.pkl"))
+        elif calib is not None:
+            joblib.dump(results, osp.join(output_pth, "wham_output_gt_intrinsics.pkl"))
+        else:
+            joblib.dump(results, osp.join(output_pth, "wham_output.pkl"))
      
     # Visualize
     if visualize:
@@ -205,7 +249,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_pkl', action='store_true', default=True,
                         help='Save output as pkl file')
     
-    parser.add_argument('--run_smplify', action='store_true',
+    parser.add_argument('--run_smplify', action='store_true', default=True,
                         help='Run Temporal SMPLify for post processing')
     
     parser.add_argument("--subject", type=str, default=subject_id, help="The subject ID, P0 - P9.")
@@ -218,7 +262,7 @@ if __name__ == '__main__':
         "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
     )
 
-
+    parser.add_argument("--gt_extrinsics", action='store_true', help="Use ground truth camera pose")
 
     args = parser.parse_args()
 
@@ -235,9 +279,7 @@ if __name__ == '__main__':
     network.eval()
     
     sequence_root = get_sequence_root(args)
-    video_path = glob(os.path.join(sequence_root, "*raw.mov"))[0]
-
-
+    video_path = glob(os.path.join(sequence_root, "*.mov"))[0]
 
     # Output folder
     sequence = args.subject + "_" + args.sequence
