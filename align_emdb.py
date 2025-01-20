@@ -11,7 +11,7 @@ import os.path as osp
 from custom_utils import open_pkl, get_sequence_root
 
 from lib.utils.transforms import matrix_to_axis_angle, axis_angle_to_matrix
-from lib.eval.eval_utils import compute_pred_trans_hat, global_align_joints, first_align_joints, align_pcl, align_extrinsics
+from lib.eval.eval_utils import compute_pred_trans_hat, global_align_joints, first_align_joints, align_pcl
 
 from configs import constants as _C
 
@@ -110,12 +110,12 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args):
     if args.gt_extrinsics:
         pred_cam_pose = gt_cam
     else:
-        aligned_cam_pose, cam_pose_rot = compute_pred_trans_hat(gt_cam[:,:3,3], pred_cam_pose_trans)
+        aligned_cam_trans, cam_pose_rot = compute_pred_trans_hat(gt_cam[:,:3,3], pred_cam_pose_trans)
         pred_cam_pose_orientation = cam_pose_rot @ pred_cam_pose_orientation
         # create pred_extrinsic matrix with same shape as gt_cam
         pred_cam_pose = np.zeros_like(gt_cam)
         pred_cam_pose[:, :3, :3] = pred_cam_pose_orientation
-        pred_cam_pose[:, :3, 3] = aligned_cam_pose
+        pred_cam_pose[:, :3, 3] = aligned_cam_trans
         pred_cam_pose[:, 3, 3] = 1
 
     wham = {0: wham}
