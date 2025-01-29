@@ -9,7 +9,7 @@ from progress.bar import Bar
 
 from lib.vis.renderer import Renderer, get_global_cameras
 
-def run_vis_on_demo(cfg, video, results, output_pth, smpl, vis_global=True):
+def run_vis_on_demo(cfg, video, results, output_pth, smpl, vis_global=True, focal_length=None):
     # to torch tensor
     tt = lambda x: torch.from_numpy(x).float().to(cfg.DEVICE)
     
@@ -19,7 +19,8 @@ def run_vis_on_demo(cfg, video, results, output_pth, smpl, vis_global=True):
     width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     
     # create renderer with cliff focal length estimation
-    focal_length = (width ** 2 + height ** 2) ** 0.5
+    if focal_length is None:
+        focal_length = (width ** 2 + height ** 2) ** 0.5
     renderer = Renderer(width, height, focal_length, cfg.DEVICE, smpl.faces)
     
     if vis_global:

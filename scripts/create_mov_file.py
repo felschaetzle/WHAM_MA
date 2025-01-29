@@ -1,7 +1,7 @@
 import cv2
 import os
 
-from custom_utils import get_sequence_root
+from scripts.custom_utils import get_sequence_root
 from configs import constants as _C
 import argparse
 

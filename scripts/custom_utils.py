@@ -7,9 +7,10 @@ from glob import glob
 import os
 import os.path as osp
 
+import sys
+sys.path.append("/home/felix/WHAM_MA")
 from configs import constants as _C
 
-WHAM_OUTPUT = "output/emdb"
 
 
 def open_pkl(file_path):

@@ -47,6 +47,7 @@ class SMPL(_SMPL):
                 bbox=None, 
                 res=None,
                 return_full_pose=False,
+                use_gt_intrinsics=False,
                 **kwargs):
         
         rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(*pred_rot6d.shape[:2], -1, 6)
@@ -58,8 +59,32 @@ class SMPL(_SMPL):
                                  pose2rot=False,
                                  return_full_pose=return_full_pose)
 
+
+
+
         if cam is not None:
             joints3d = output.joints.reshape(*cam.shape[:2], -1, 3)
+
+            if use_gt_intrinsics:
+                # Convert cam to SMPL translation in cam frame
+                full_cam = convert_pare_to_full_img_cam(
+                    cam, 
+                    bbox[:, :, 2] * 200., 
+                    bbox[:, :, :2], 
+                    res[:, 0].unsqueeze(-1), 
+                    res[:, 1].unsqueeze(-1), 
+                    focal_length=cam_intrinsics[:, :, 0, 0]
+                )
+                
+                full_joints2d = full_perspective_projection(
+                    joints3d,
+                    translation=full_cam,
+                    cam_intrinsics=cam_intrinsics,
+                )
+                output.full_joints2d = full_joints2d
+                output.full_cam = full_cam.reshape(-1, 3)
+                
+                return output
             
             # Weak perspective projection (for InstaVariety)
             weak_cam = convert_weak_perspective_to_perspective(cam)

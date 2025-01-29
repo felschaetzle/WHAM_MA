@@ -2,6 +2,12 @@ import pickle
 import joblib
 import numpy as np
 import torch
+from smplx import SMPL
+import sys
+sys.path.append('/home/felix/WHAM_MA')
+print(sys.path)
+from lib.models import build_network, build_body_model
+from configs.config import get_cfg
 
 import argparse
 from glob import glob
@@ -11,77 +17,63 @@ import os.path as osp
 from custom_utils import open_pkl, get_sequence_root
 
 from lib.utils.transforms import matrix_to_axis_angle, axis_angle_to_matrix
-from lib.eval.eval_utils import compute_pred_trans_hat, global_align_joints, first_align_joints, align_pcl
+from lib.eval.eval_utils import compute_pred_trans_hat, global_align_joints, first_align_joints, align_pcl, compute_jpe, batch_align_by_pelvis, batch_compute_similarity_transform_torch
 
+
+import sys
+sys.path.append("/home/felix/WHAM_MA")
 from configs import constants as _C
 
 from scipy.spatial.transform import Rotation as R
 from lib.utils import transforms
 
 
-WHAM_OUTPUT = "output/emdb"
+m2mm = 1e3
+pelvis_idxs = [1, 2]
 
-def align_via_procrustes_torch(ground_truth, prediction):
-    """
-    Aligns the predicted points to the ground truth using Procrustes Analysis with scaling.
-    
-    Parameters:
-        ground_truth (torch.Tensor): Ground truth points, shape (N, 3).
-        prediction (torch.Tensor): Predicted points, shape (N, 3).
-    
-    Returns:
-        aligned_prediction (torch.Tensor): Aligned prediction points, shape (N, 3).
-        rotation_matrix (torch.Tensor): Optimal rotation matrix, shape (3, 3).
-        translation_vector (torch.Tensor): Optimal translation vector, shape (3,).
-        scale (float): Optimal scale factor.
-    """
-    # Ensure input is of type torch.float32
-    ground_truth = ground_truth.float()
-    prediction = prediction.float()
-    
-    # Center the points
-    gt_mean = torch.mean(ground_truth, dim=0)
-    pred_mean = torch.mean(prediction, dim=0)
-    
-    gt_centered = ground_truth - gt_mean
-    pred_centered = prediction - pred_mean
-    
-    # Compute cross-covariance matrix
-    H = pred_centered.T @ gt_centered
-    
-    # Perform SVD
-    U, S, Vt = torch.linalg.svd(H)
-    
-    # Compute rotation matrix
-    R = U @ Vt
-    if torch.det(R) < 0:
-        U[:, -1] *= -1
-        R = U @ Vt
-    
-    # Compute scale
-    scale = torch.sum(S) / torch.sum(pred_centered.pow(2))
-    
-    # Compute translation vector
-    t = gt_mean - scale * (R @ pred_mean)
-    
-    # Align the prediction
-    aligned_prediction = scale * (R @ prediction.T).T + t
-    
-    return aligned_prediction, R, t, scale
+def run(gt_pth, wham_pth, slam_pth, output_pth, args, cfg):
 
-def run(gt_pth, wham_pth, slam_pth, output_pth, args):
     yup2ydown = transforms.axis_angle_to_matrix(torch.tensor([[np.pi, 0, 0]])).float()
+
+    tt = lambda x: torch.from_numpy(x).float().to(cfg.DEVICE) 
+
+    smpl_batch_size = cfg.TRAIN.BATCH_SIZE * cfg.DATASET.SEQLEN
+    smpl = build_body_model(cfg.DEVICE, smpl_batch_size)
+    smpl = {k: SMPL(_C.BMODEL.FLDR, gender=k).to(cfg.DEVICE) for k in ['male', 'female', 'neutral']}
+
 
     annot = open_pkl(gt_pth)
     masks = annot['good_frames_mask']#[:850]
     gt_trans_world = annot["smpl"]["trans"]#[:850, :][masks]
     gt_pose_world = annot["smpl"]["poses_root"]#[:850, :][masks]
+    gt_body_pose = annot["smpl"]["poses_body"]#[:850, :][masks]
+    gt_betas = np.repeat(annot["smpl"]["betas"].reshape((1, -1)), repeats=annot["n_frames"], axis=0)
     gt_cam = annot["camera"]["extrinsics"]#[:850, :][masks]
+    gender = annot['gender']
+
+    poses_root_cam = transforms.matrix_to_axis_angle(tt(gt_cam[:, :3, :3]) @ transforms.axis_angle_to_matrix(tt(gt_pose_world)))
+
+    target_cam = smpl[gender](body_pose=tt(gt_body_pose), global_orient=poses_root_cam, betas=tt(gt_betas))
+    target_verts_cam = target_cam.vertices
+    target_j3d_cam = target_cam.joints[:, :24]
 
     wham = open_pkl(wham_pth)
     wham = wham[0]
     pred_trans_world = wham["trans_world"]
     pred_pose_world = wham["pose_world"][:, :3]
+    body_pose = wham["pose_world"][:, 3:]
+    betas = wham["betas"]
+    root_cam = wham["pose"][:, :3]
+
+    body_pose = np.reshape(body_pose, (-1, 23, 3))
+    # transform to matrix representation
+    body_pose = transforms.axis_angle_to_matrix(tt(body_pose))
+    root_cam = transforms.axis_angle_to_matrix(tt(root_cam))
+
+    # Predicted local motion
+    pred_cam = smpl['neutral'](body_pose=body_pose, global_orient=root_cam.unsqueeze(1), betas=tt(betas), pose2rot=False)
+    pred_verts_cam = pred_cam.vertices
+    pred_j3d_cam = pred_cam.joints[:, :24]
 
     pred_pose_world = R.from_rotvec(pred_pose_world).as_matrix()
     slam_output = open_pkl(slam_pth)
@@ -106,7 +98,6 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args):
     root_poses_hat = R.from_matrix(root_poses_hat.squeeze(0).numpy()).as_rotvec()
 
     # Align the gt cam and slam cam
-
     if args.gt_extrinsics:
         pred_cam_pose = gt_cam
     else:
@@ -118,10 +109,39 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args):
         pred_cam_pose[:, :3, 3] = aligned_cam_trans
         pred_cam_pose[:, 3, 3] = 1
 
+
+        # Compute the entire displacement of ground truth trajectory
+        disps, disp = [], 0
+        for p1, p2 in zip(gt_trans_world, gt_trans_world[1:]):
+            delta = (p2 - p1).norm(2, dim=-1)
+            disp += delta
+            disps.append(disp)
+        
+        # Compute absolute root-translation-error (RTE)
+        rte = torch.norm(gt_trans_world - trans_hat, 2, dim=-1)
+        
+        # Normalize it to the displacement
+        normalized_rte = (rte / disp).numpy() * 1e2
+        mean_normalized_rte = normalized_rte.mean()
+        print("Normalized RTE: ", mean_normalized_rte)
+
+    # <======= Evaluation on the local motion
+    pred_j3d_cam, target_j3d_cam, pred_verts_cam, target_verts_cam = batch_align_by_pelvis(
+        [pred_j3d_cam, target_j3d_cam, pred_verts_cam, target_verts_cam], pelvis_idxs
+    )
+    S1_hat = batch_compute_similarity_transform_torch(pred_j3d_cam, target_j3d_cam)
+    pa_mpjpe = torch.sqrt(((S1_hat - target_j3d_cam) ** 2).sum(dim=-1)).mean(dim=-1).detach().cpu().numpy() * m2mm
+    mpjpe = torch.sqrt(((pred_j3d_cam - target_j3d_cam) ** 2).sum(dim=-1)).mean(dim=-1).detach().cpu().numpy() * m2mm
+    print("PA-MPJPE: ", pa_mpjpe.mean())
+    print("MPJPE: ", mpjpe.mean())
+
     wham = {0: wham}
     wham[0]["trans_world_hat"] = trans_hat
     wham[0]["pose_world_hat"] = root_poses_hat
     wham[0]["cam_pose_hat"] = pred_cam_pose
+    wham[0]["rte"] = mean_normalized_rte
+    wham[0]["pa_mpjpe"] = pa_mpjpe.mean()
+    wham[0]["mpjpe"] = mpjpe.mean()
     joblib.dump(wham, output_pth)
 
     print("DONE")
@@ -142,7 +162,12 @@ if __name__ == '__main__':
     parser.add_argument("--gt_extrinsics", action='store_true', help="Use ground truth camera pose")
 
     parser.add_argument("--calib", help="Use ground truth camera pose")
-
+    
+    parser.add_argument('-c', '--cfg', type=str, default='./configs/yamls/demo.yaml', help='cfg file path')
+    parser.add_argument(
+        "opts", default=None, nargs=argparse.REMAINDER,
+        help="Modify config options using the command-line")
+    
     args = parser.parse_args()
     
     sequence_root = get_sequence_root(args, gt=True)
@@ -169,5 +194,8 @@ if __name__ == '__main__':
     else:
         sequence = "wham_output_DPVO_processed.pkl"
     output_pth = osp.join(sequence_root, sequence)
+
+
     print(output_pth)
-    run(gt_data_path, wham_data_path, slam_path,  output_pth, args)
+    cfg = get_cfg(args, False)
+    run(gt_data_path, wham_data_path, slam_path,  output_pth, args, cfg)

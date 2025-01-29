@@ -19,8 +19,9 @@ from lib.models import build_network, build_body_model
 from lib.models.preproc.detector import DetectionModel
 from lib.models.preproc.extractor import FeatureExtractor
 from lib.models.smplify import TemporalSMPLify
+from lib.models.smplify.custom_smplify import CustomSMPLify
 
-from custom_utils import get_sequence_root
+from scripts.custom_utils import get_sequence_root
 from configs import constants as _C
 
 from scipy.spatial.transform import Rotation as R
@@ -58,10 +59,12 @@ def run(cfg,
 
     run_preproc = True
     if calib is None:
+        is_gt_intrinsics = False
         if (osp.exists(osp.join(output_pth, 'tracking_results.pth')) and 
                 osp.exists(osp.join(output_pth, 'slam_results.pth'))):
             run_preproc = False
     else:
+        is_gt_intrinsics = True
         if (osp.exists(osp.join(output_pth, 'tracking_results_gt_intrinsics.pth')) and 
                 osp.exists(osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))):
             run_preproc = False
@@ -125,6 +128,18 @@ def run(cfg,
                 slam_results = joblib.load(osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
                 logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
     
+    if is_gt_intrinsics:
+        calib_data = np.loadtxt(calib, delimiter=" ")
+        fx, fy, cx, cy = calib_data[:4]
+        gt_intrinsics = np.eye(3)
+        gt_intrinsics[0,0] = fx
+        gt_intrinsics[0,2] = cx
+        gt_intrinsics[1,1] = fy
+        gt_intrinsics[1,2] = cy
+        gt_intrinsics = torch.tensor(gt_intrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+        # kwargs['cam_intrinsics'] = gt_intrinsics
+        print("GT intrinsics")
+        print(gt_intrinsics)
 
     if args.gt_extrinsics:
         sequence_root = get_sequence_root(args, gt=True)
@@ -137,8 +152,10 @@ def run(cfg,
         slam_results = gt_extrinsics
 
     # Build dataset
-    dataset = CustomDataset(cfg, tracking_results, slam_results, width, height, fps)
-    
+    if is_gt_intrinsics:
+        dataset = CustomDataset(cfg, tracking_results, slam_results, width, height, fps, intrinsics=gt_intrinsics)
+    else:
+        dataset = CustomDataset(cfg, tracking_results, slam_results, width, height, fps)
     # run WHAM
     results = defaultdict(dict)
     
@@ -182,16 +199,29 @@ def run(cfg,
         
         # if False:
         if args.run_smplify:
-            smplify = TemporalSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
-            input_keypoints = dataset.tracking_results[_id]['keypoints']
-            pred = smplify.fit(pred, input_keypoints, **kwargs)
-            
-            with torch.no_grad():
-                network.pred_pose = pred['pose']
-                network.pred_shape = pred['betas']
-                network.pred_cam = pred['cam']
-                output = network.forward_smpl(**kwargs)
-                pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+            if True:
+                smplify = CustomSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE, use_gt_intrinsics=is_gt_intrinsics)
+                input_keypoints = dataset.tracking_results[_id]['keypoints']
+                pred = smplify.fit(pred, input_keypoints, **kwargs)
+                
+                with torch.no_grad():
+                    network.pred_pose = pred['pose']
+                    network.pred_shape = pred['betas']
+                    network.pred_cam = pred['cam']
+                    output = network.forward_smpl(**kwargs)
+                    pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+
+            else:
+                smplify = TemporalSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
+                input_keypoints = dataset.tracking_results[_id]['keypoints']
+                pred = smplify.fit(pred, input_keypoints, **kwargs)
+                
+                with torch.no_grad():
+                    network.pred_pose = pred['pose']
+                    network.pred_shape = pred['betas']
+                    network.pred_cam = pred['cam']
+                    output = network.forward_smpl(**kwargs)
+                    pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
         
         # ========= Store results ========= #
         pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
@@ -215,13 +245,17 @@ def run(cfg,
         elif calib is not None:
             joblib.dump(results, osp.join(output_pth, "wham_output_gt_intrinsics.pkl"))
         else:
-            joblib.dump(results, osp.join(output_pth, "wham_output.pkl"))
+            joblib.dump(results, osp.join(output_pth, "wham_output_DPVO.pkl"))
      
     # Visualize
     if visualize:
         from lib.vis.run_vis import run_vis_on_demo
         with torch.no_grad():
-            run_vis_on_demo(cfg, video, results, output_pth, network.smpl, vis_global=run_global)
+            if is_gt_intrinsics:
+                focal_len = gt_intrinsics[0, 0, 0]
+            else:
+                focal_len = None
+            run_vis_on_demo(cfg, video, results, output_pth, network.smpl, vis_global=run_global, focal_length=focal_len)
         
 
 if __name__ == '__main__':
@@ -234,10 +268,10 @@ if __name__ == '__main__':
                         default='/mnt/hdd/emdb_dataset/P5/40_indoor_walk_big_circle/raw.mov', 
                         help='input video path or youtube link')
 
-    parser.add_argument('--output_pth', type=str, default='output/emdb', 
+    parser.add_argument('--output_pth', type=str, default=_C.PATHS.WHAM_OUTPUT, 
                         help='output folder to write results')
     
-    parser.add_argument('--calib', type=str, default=None, 
+    parser.add_argument('--calib', type=str, 
                         help='Camera calibration file path')
 
     parser.add_argument('--estimate_local_only', action='store_true',

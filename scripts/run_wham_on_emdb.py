@@ -68,13 +68,13 @@ def main():
 
 			# execute_script("create_mov_file.py", subject_id, sequence_id)
 
-			# execute_script("demo.py", subject_id, sequence_id, gt_camera=False)
+			execute_script("demo.py", subject_id, sequence_id, cam="DPVO")
 
 			execute_script("demo.py", subject_id, sequence_id, cam="gt_intrinsics")
 
-			# execute_script("align_emdb.py", subject_id, sequence_id, gt_camera=False)
+			execute_script("scripts/align_emdb.py", subject_id, sequence_id, cam="DPVO")
 
-			execute_script("align_emdb.py", subject_id, sequence_id, cam="gt_intrinsics")
+			execute_script("scripts/align_emdb.py", subject_id, sequence_id, cam="gt_intrinsics")
 
 		else:
 			print("FUCK!")

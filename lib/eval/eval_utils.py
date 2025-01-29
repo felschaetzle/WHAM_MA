@@ -330,8 +330,8 @@ def global_align_joints(gt_joints, pred_joints):
     pred_glob = (
         s_glob * torch.einsum("ij,tnj->tni", R_glob, pred_joints) + t_glob[None, None]
     )
-    print("global align")
-    print(s_glob, R_glob, t_glob)
+    # print("global align")
+    # print(s_glob, R_glob, t_glob)
     return pred_glob
 
 
@@ -491,8 +491,8 @@ def compute_pred_trans_hat(target_trans, pred_trans):
         s * torch.einsum("tij,tnj->tni", rot, pred_trans[None, :]) + trans[None, :]
     )[0]
     
-    print("trans align")
-    print(s, rot, trans)
+    # print("trans align")
+    # print(s, rot, trans)
     return pred_trans_hat.numpy(), rot
 
 def align_extrinsics(Y, X, weight=None, fixed_scale=False):
