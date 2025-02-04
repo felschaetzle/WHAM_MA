@@ -171,7 +171,6 @@ def main(args):
     sequence_root_wham = get_sequence_root(args, gt=False)
     wham_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_DPVO_processed.pkl"))[0]
     wham_output = joblib.load(wham_iference_data_path)
-    wham_output = wham_output[0]
     inf_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
 
     wham_smpl_seq = SMPLSequence(
@@ -186,25 +185,8 @@ def main(args):
         color = (0.2, 0.8, 0.2, 1),
     )    
 
-    wham_gt_cam_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_intrinsics_processed.pkl"))[0]
-    wham_gt_cam_output = joblib.load(wham_gt_cam_iference_data_path)
-    wham_gt_cam_output = wham_gt_cam_output[0]
-    wham_gt_cam_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
-    wham_gt_cam_smpl_seq = SMPLSequence(
-        wham_gt_cam_output["pose_world"][:,3:],
-        smpl_layer=wham_gt_cam_smpl_layer,
-        poses_root=wham_gt_cam_output["pose_world_hat"][:,:3],
-        betas=wham_gt_cam_output["betas"],
-        # trans=wham_output["trans_world"],
-        trans=wham_gt_cam_output["trans_world_hat"],
-        # trans=data["smpl"]["trans"],
-        name="Mesh: WHAM + GT Cam",
-        color = (0.2, 0.2, 0.8, 1),
-    )  
-    
-    wham_gt_intrinsics_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_intrinsics_cam_t_processed.pkl"))[0]
+    wham_gt_intrinsics_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_intrinsics_processed.pkl"))[0]
     wham_gt_intrinsics_output = joblib.load(wham_gt_intrinsics_iference_data_path)
-    wham_gt_intrinsics_output = wham_gt_intrinsics_output[0]
     wham_gt_intrinsics_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
     wham_gt_intrinsics_smpl_seq = SMPLSequence(
         wham_gt_intrinsics_output["pose_world"][:,3:],
@@ -273,7 +255,7 @@ def main(args):
     # Add everything to the scene.
 
     if args.gt_camera:
-        viewer.scene.add(raw_images_bb, gt_camera, wham_camera, wham_camera_gt_intrinsics, gt_smpl_seq, wham_smpl_seq, wham_gt_intrinsics_smpl_seq, wham_gt_cam_smpl_seq)
+        viewer.scene.add(raw_images_bb, gt_camera, wham_camera, gt_smpl_seq, wham_smpl_seq, wham_gt_intrinsics_smpl_seq)
     else:
         viewer.scene.add(gt_camera, wham_camera, gt_smpl_seq, wham_smpl_seq, raw_images_bb)
 
@@ -341,7 +323,7 @@ def main(args):
         )
 
         if args.gt_camera:
-            viewer.scene.add(gt_camera_path, dpvo_path, dpvo_gt_intrinsics_cam_path, gt_path, wham_path, wham_gt_intrinsics_path)
+            viewer.scene.add(gt_camera_path, dpvo_path, gt_path, wham_path, wham_gt_intrinsics_path)
         else:
             viewer.scene.add(gt_camera_path, dpvo_path, gt_path, wham_path)
 

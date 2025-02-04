@@ -13,6 +13,9 @@ from progress.bar import Bar
 
 from configs.config import get_cfg_defaults
 from lib.data.datasets import CustomDataset
+from lib.data.dataloader import setup_eval_dataloader
+from lib.utils.utils import prepare_batch
+
 from lib.utils.imutils import avg_preds
 from lib.utils.transforms import matrix_to_axis_angle
 from lib.models import build_network, build_body_model
@@ -20,6 +23,7 @@ from lib.models.preproc.detector import DetectionModel
 from lib.models.preproc.extractor import FeatureExtractor
 from lib.models.smplify import TemporalSMPLify
 from lib.models.smplify.custom_smplify import CustomSMPLify
+from lib.data.datasets.dataset_custom import convert_dpvo_to_cam_angvel
 
 from scripts.custom_utils import get_sequence_root
 from configs import constants as _C
@@ -33,6 +37,12 @@ except:
     logger.info('DPVO is not properly installed. Only estimate in local coordinates !')
     _run_global = False
 
+def find_substring(substring, string_list):
+    for i, s in enumerate(string_list):
+        if substring in s:
+            return i  # Return the first matching element
+    return None  # Return None if no match is found
+
 def run(cfg,
         video,
         output_pth,
@@ -40,7 +50,8 @@ def run(cfg,
         calib=None,
         run_global=True,
         save_pkl=False,
-        visualize=False):
+        visualize=False,
+        gt_bb_kp=True):
     
     cap = cv2.VideoCapture(video)
     assert cap.isOpened(), f'Faild to load video file {video}'
@@ -53,81 +64,87 @@ def run(cfg,
     
     print(args.gt_extrinsics, calib)
 
-    if args.gt_extrinsics and calib is not None:
-        logger.error("Arguments gt_extrinsics and calib can not be provided at the same time. Either use gt intrinsics with DPVO by passing the calib arg or gt extrinsics directly!")
-        return
-
     run_preproc = True
-    if calib is None:
+    if not calib:
         is_gt_intrinsics = False
         if (osp.exists(osp.join(output_pth, 'tracking_results.pth')) and 
                 osp.exists(osp.join(output_pth, 'slam_results.pth'))):
             run_preproc = False
     else:
         is_gt_intrinsics = True
+        calib = "output/emdb/"+ args.subject + "_" + args.sequence + "/gt_intrinsics.txt"
         if (osp.exists(osp.join(output_pth, 'tracking_results_gt_intrinsics.pth')) and 
                 osp.exists(osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))):
             run_preproc = False
 
+    if not gt_bb_kp:
+        # Preprocess
+        with torch.no_grad():
+            if run_preproc:
+                
+                detector = DetectionModel(cfg.DEVICE.lower())
+                extractor = FeatureExtractor(cfg.DEVICE.lower(), cfg.FLIP_EVAL)
+                
+                if run_global: slam = SLAMModel(video, output_pth, width, height, calib)
+                else: slam = None
+                
+                bar = Bar('Preprocess: 2D detection and SLAM', fill='#', max=length)
+                while (cap.isOpened()):
+                    flag, img = cap.read()
+                    if not flag: break
+                    
+                    # 2D detection and tracking
+                    detector.track(img, fps, length)
+                    
+                    # SLAM
+                    if slam is not None: 
+                        slam.track()
+                    
+                    bar.next()
 
-    # Preprocess
-    with torch.no_grad():
-        if run_preproc:
-            
-            detector = DetectionModel(cfg.DEVICE.lower())
-            extractor = FeatureExtractor(cfg.DEVICE.lower(), cfg.FLIP_EVAL)
-            
-            if run_global: slam = SLAMModel(video, output_pth, width, height, calib)
-            else: slam = None
-            
-            bar = Bar('Preprocess: 2D detection and SLAM', fill='#', max=length)
-            while (cap.isOpened()):
-                flag, img = cap.read()
-                if not flag: break
+                tracking_results = detector.process(fps)
                 
-                # 2D detection and tracking
-                detector.track(img, fps, length)
-                
-                # SLAM
                 if slam is not None: 
-                    slam.track()
+                    slam_results = slam.process()
+                else:
+                    slam_results = np.zeros((length, 7))
+                    slam_results[:, 3] = 1.0    # Unit quaternion
+            
+                # Extract image features
+                # TODO: Merge this into the previous while loop with an online bbox smoothing.
+                tracking_results = extractor.run(video, tracking_results)
+                logger.info('Complete Data preprocessing!')
                 
-                bar.next()
+                # Save the processed data
+                if calib is None:
+                    joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results.pth'))
+                    joblib.dump(slam_results, osp.join(output_pth, 'slam_results.pth'))
+                    logger.info(f'Save processed data at {output_pth}')
+                else:
+                    joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results_gt_intrinsics.pth'))
+                    joblib.dump(slam_results, osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
+                    logger.info(f'Save processed data at {output_pth}')
+            
+            # If the processed data already exists, load the processed data
+            else:
+                if not calib:
+                    tracking_results = joblib.load(osp.join(output_pth, 'tracking_results.pth'))
+                    slam_results = joblib.load(osp.join(output_pth, 'slam_results.pth'))
+                    logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
+                else:
+                    tracking_results = joblib.load(osp.join(output_pth, 'tracking_results_gt_intrinsics.pth'))
+                    slam_results = joblib.load(osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
+                    logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
+    else:
+        eval_loader = setup_eval_dataloader(cfg, 'emdb', args.eval_split, cfg.MODEL.BACKBONE)
+        emdb_sequence_index = find_substring(args.subject+"_"+args.sequence, eval_loader.dataset.labels['vid'])
+        if emdb_sequence_index is None:
+            logger.error(f"Sequence {args.subject}_{args.sequence} not found in the emdb2 dataset. Not usefull for global trajectory.")
+            return
+        slam_results = joblib.load(osp.join(output_pth, 'slam_results.pth'))
+        cam_angvel = convert_dpvo_to_cam_angvel(slam_results, fps).to(cfg.DEVICE).unsqueeze(0)
+        print("Loading data from eval loader")
 
-            tracking_results = detector.process(fps)
-            
-            if slam is not None: 
-                slam_results = slam.process()
-            else:
-                slam_results = np.zeros((length, 7))
-                slam_results[:, 3] = 1.0    # Unit quaternion
-        
-            # Extract image features
-            # TODO: Merge this into the previous while loop with an online bbox smoothing.
-            tracking_results = extractor.run(video, tracking_results)
-            logger.info('Complete Data preprocessing!')
-            
-            # Save the processed data
-            if calib is None:
-                joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results.pth'))
-                joblib.dump(slam_results, osp.join(output_pth, 'slam_results.pth'))
-                logger.info(f'Save processed data at {output_pth}')
-            else:
-                joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results_gt_intrinsics.pth'))
-                joblib.dump(slam_results, osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
-                logger.info(f'Save processed data at {output_pth}')
-        
-        # If the processed data already exists, load the processed data
-        else:
-            if calib is None:
-                tracking_results = joblib.load(osp.join(output_pth, 'tracking_results.pth'))
-                slam_results = joblib.load(osp.join(output_pth, 'slam_results.pth'))
-                logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
-            else:
-                tracking_results = joblib.load(osp.join(output_pth, 'tracking_results_gt_intrinsics.pth'))
-                slam_results = joblib.load(osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
-                logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
-    
     if is_gt_intrinsics:
         calib_data = np.loadtxt(calib, delimiter=" ")
         fx, fy, cx, cy = calib_data[:4]
@@ -137,7 +154,6 @@ def run(cfg,
         gt_intrinsics[1,1] = fy
         gt_intrinsics[1,2] = cy
         gt_intrinsics = torch.tensor(gt_intrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-        # kwargs['cam_intrinsics'] = gt_intrinsics
         print("GT intrinsics")
         print(gt_intrinsics)
 
@@ -146,103 +162,94 @@ def run(cfg,
         gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
         gt_data = joblib.load(gt_data_path)
         gt_extrinsics = gt_data["camera"]["extrinsics"]
-        gt_extrinsics = np.linalg.inv(gt_extrinsics)
-        gt_extrinsics_rot = R.from_matrix(gt_extrinsics[:,:3,:3]).as_quat()
-        gt_extrinsics = np.concatenate([gt_extrinsics[:,:3,3], gt_extrinsics_rot], axis=1)
-        slam_results = gt_extrinsics
+        gt_cam_pose = np.linalg.inv(gt_extrinsics)
+        gt_cam_pose_rot = R.from_matrix(gt_cam_pose[:,:3,:3]).as_quat()
+        gt_cam_pose = np.concatenate([gt_cam_pose[:,:3,3], gt_cam_pose_rot], axis=1)
+        slam_results = gt_cam_pose
+        print("GT extrinsics")
 
-    # Build dataset
-    if is_gt_intrinsics:
-        dataset = CustomDataset(cfg, tracking_results, slam_results, width, height, fps, intrinsics=gt_intrinsics)
-    else:
-        dataset = CustomDataset(cfg, tracking_results, slam_results, width, height, fps)
-    # run WHAM
     results = defaultdict(dict)
     
-    n_subjs = len(dataset)
-    for subj in range(n_subjs):
+    with torch.no_grad():
+        # Forward pass with flipped input
+        flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=True)
+        x, inits, features, kwargs, gt = prepare_batch(flipped_batch, cfg.DEVICE)
+        if is_gt_intrinsics:
+            print("Use GT intrinsics and use DPVO with GT intrinsics")
+            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+            kwargs['cam_angvel'] = cam_angvel
+        elif is_gt_intrinsics and args.gt_extrinsics:
+            print("Use GT intrinsics and GT extrinsics")
+            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+        elif not is_gt_intrinsics and not args.gt_extrinsics:
+            print("Don't replace intrinsics and use DPVO with GT intrinsics")
+            kwargs['cam_angvel'] = cam_angvel
 
+        flipped_pred = network(x, inits, features, return_y_up=True, **kwargs)
+        
+        # Forward pass with normal input
+        flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=False)
+        x, inits, features, kwargs, gt = prepare_batch(flipped_batch, cfg.DEVICE)
+        if is_gt_intrinsics:
+            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+            kwargs['cam_angvel'] = cam_angvel
+        elif is_gt_intrinsics and args.gt_extrinsics:
+            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+        elif not is_gt_intrinsics and not args.gt_extrinsics:
+            kwargs['cam_angvel'] = cam_angvel
+
+        pred = network(x, inits, features, return_y_up=True, **kwargs)
+
+        # Merge two predictions
+        flipped_pose, flipped_shape = flipped_pred['pose'].squeeze(0), flipped_pred['betas'].squeeze(0)
+        pose, shape = pred['pose'].squeeze(0), pred['betas'].squeeze(0)
+        flipped_pose, pose = flipped_pose.reshape(-1, 24, 6), pose.reshape(-1, 24, 6)
+        avg_pose, avg_shape = avg_preds(pose, shape, flipped_pose, flipped_shape)
+        avg_pose = avg_pose.reshape(-1, 144)
+        avg_contact = (flipped_pred['contact'][..., [2, 3, 0, 1]] + pred['contact']) / 2
+        
+        # Refine trajectory with merged prediction
+        network.pred_pose = avg_pose.view_as(network.pred_pose)
+        network.pred_shape = avg_shape.view_as(network.pred_shape)
+        network.pred_contact = avg_contact.view_as(network.pred_contact)
+        output = network.forward_smpl(**kwargs)
+        cam_angvel = kwargs['cam_angvel']
+        pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+
+    if args.run_smplify:
+        # convert gt extrinsics to torch tensor
+        kwargs["gt_extrinsics"] = torch.tensor(gt_cam_pose).float().to(cfg.DEVICE).unsqueeze(0)
+        smplify = CustomSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE, use_gt_intrinsics=is_gt_intrinsics)
+        input_keypoints = dataset.tracking_results[_id]['keypoints']
+        pred = smplify.fit(pred, input_keypoints, **kwargs)
+        
         with torch.no_grad():
-            if cfg.FLIP_EVAL:
-                # Forward pass with flipped input
-                flipped_batch = dataset.load_data(subj, True)
-                _id, x, inits, features, mask, init_root, cam_angvel, frame_id, kwargs = flipped_batch
-                flipped_pred = network(x, inits, features, mask=mask, init_root=init_root, cam_angvel=cam_angvel, return_y_up=True, **kwargs)
-                
-                # Forward pass with normal input
-                batch = dataset.load_data(subj)
-                _id, x, inits, features, mask, init_root, cam_angvel, frame_id, kwargs = batch
-                pred = network(x, inits, features, mask=mask, init_root=init_root, cam_angvel=cam_angvel, return_y_up=True, **kwargs)
-                
-                # Merge two predictions
-                flipped_pose, flipped_shape = flipped_pred['pose'].squeeze(0), flipped_pred['betas'].squeeze(0)
-                pose, shape = pred['pose'].squeeze(0), pred['betas'].squeeze(0)
-                flipped_pose, pose = flipped_pose.reshape(-1, 24, 6), pose.reshape(-1, 24, 6)
-                avg_pose, avg_shape = avg_preds(pose, shape, flipped_pose, flipped_shape)
-                avg_pose = avg_pose.reshape(-1, 144)
-                avg_contact = (flipped_pred['contact'][..., [2, 3, 0, 1]] + pred['contact']) / 2
-                
-                # Refine trajectory with merged prediction
-                network.pred_pose = avg_pose.view_as(network.pred_pose)
-                network.pred_shape = avg_shape.view_as(network.pred_shape)
-                network.pred_contact = avg_contact.view_as(network.pred_contact)
-                output = network.forward_smpl(**kwargs)
-                pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
-            
-            else:
-                # data
-                batch = dataset.load_data(subj)
-                _id, x, inits, features, mask, init_root, cam_angvel, frame_id, kwargs = batch
-                
-                # inference
-                pred = network(x, inits, features, mask=mask, init_root=init_root, cam_angvel=cam_angvel, return_y_up=True, **kwargs)
-        
-        # if False:
-        if args.run_smplify:
-            if True:
-                smplify = CustomSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE, use_gt_intrinsics=is_gt_intrinsics)
-                input_keypoints = dataset.tracking_results[_id]['keypoints']
-                pred = smplify.fit(pred, input_keypoints, **kwargs)
-                
-                with torch.no_grad():
-                    network.pred_pose = pred['pose']
-                    network.pred_shape = pred['betas']
-                    network.pred_cam = pred['cam']
-                    output = network.forward_smpl(**kwargs)
-                    pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+            network.pred_pose = pred['pose']
+            network.pred_shape = pred['betas']
+            network.pred_cam = pred['cam']
+            output = network.forward_smpl(**kwargs)
+            pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
 
-            else:
-                smplify = TemporalSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
-                input_keypoints = dataset.tracking_results[_id]['keypoints']
-                pred = smplify.fit(pred, input_keypoints, **kwargs)
-                
-                with torch.no_grad():
-                    network.pred_pose = pred['pose']
-                    network.pred_shape = pred['betas']
-                    network.pred_cam = pred['cam']
-                    output = network.forward_smpl(**kwargs)
-                    pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
-        
-        # ========= Store results ========= #
-        pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
-        pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
-        pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-        pred_pose = np.concatenate((pred_root, pred_body_pose), axis=-1)
-        pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
-        pred_trans = (pred['trans_cam'] - network.output.offset).cpu().numpy()
-        
-        results[_id]['pose'] = pred_pose
-        results[_id]['trans'] = pred_trans
-        results[_id]['pose_world'] = pred_pose_world
-        results[_id]['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
-        results[_id]['betas'] = pred['betas'].cpu().squeeze(0).numpy()
-        results[_id]['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
-        results[_id]['frame_ids'] = frame_id
+
+    # ========= Store results ========= #
+    pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
+    pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
+    pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+    pred_pose = np.concatenate((pred_root, pred_body_pose), axis=-1)
+    pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
+    pred_trans = (pred['trans_cam'] - network.output.offset).cpu().numpy()
+    
+    results['pose'] = pred_pose
+    results['trans'] = pred_trans
+    results['pose_world'] = pred_pose_world
+    results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
+    results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
+    results['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
     
     if save_pkl:
         if args.gt_extrinsics:
             joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera.pkl"))
-        elif calib is not None:
+        elif calib:
             joblib.dump(results, osp.join(output_pth, "wham_output_gt_intrinsics.pkl"))
         else:
             joblib.dump(results, osp.join(output_pth, "wham_output_DPVO.pkl"))
@@ -264,15 +271,17 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--gt_extrinsics", default=False, action='store_true', help="Use ground truth camera pose")
+
+    parser.add_argument('--calib', default=True, type=str, 
+                        help='Use GT intrinsics')
+
     parser.add_argument('--video', type=str, 
                         default='/mnt/hdd/emdb_dataset/P5/40_indoor_walk_big_circle/raw.mov', 
                         help='input video path or youtube link')
 
     parser.add_argument('--output_pth', type=str, default=_C.PATHS.WHAM_OUTPUT, 
                         help='output folder to write results')
-    
-    parser.add_argument('--calib', type=str, 
-                        help='Camera calibration file path')
 
     parser.add_argument('--estimate_local_only', action='store_true',
                         help='Only estimate motion in camera coordinate if True')
@@ -283,7 +292,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_pkl', action='store_true', default=True,
                         help='Save output as pkl file')
     
-    parser.add_argument('--run_smplify', action='store_true', default=True,
+    parser.add_argument('--run_smplify', action='store_true', default=False,
                         help='Run Temporal SMPLify for post processing')
     
     parser.add_argument("--subject", type=str, default=subject_id, help="The subject ID, P0 - P9.")
@@ -296,7 +305,8 @@ if __name__ == '__main__':
         "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
     )
 
-    parser.add_argument("--gt_extrinsics", action='store_true', help="Use ground truth camera pose")
+    parser.add_argument(
+        "--eval-split", type=str, default='2', help="Evaluation data split")
 
     args = parser.parse_args()
 
