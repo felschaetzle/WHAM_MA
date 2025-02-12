@@ -43,6 +43,13 @@ def get_sequence_root(args, gt=True):
             raise ValueError(f"Sequence ID {args.sequence}* for subject {args.subject} is ambiguous.")
         return candidates[0]
 
+
+def find_substring(substring, string_list):
+    for i, s in enumerate(string_list):
+        if substring in s:
+            return i  # Return the first matching element
+    return None  # Return None if no match is found
+
 # wham = analyze_pkl("output/emdb/raw_short/wham_output.pkl")
 # tracking = analyze_pkl("output/emdb/raw_short/tracking_results.pth")
 # slam = open_pkl("output/emdb/P4_35/slam_results.pth")

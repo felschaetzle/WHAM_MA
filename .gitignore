@@ -1,0 +1,9 @@
+# Ignore all __pycache__ directories recursively
+**/__pycache__/
+
+# Other directories and files to ignore
+checkpoints/
+dataset/
+experiments/
+imgui.ini
+output/

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 import numpy as np
-from matplotlib import pyplot as plt
+# from matplotlib import pyplot as plt
 
 
 def compute_accel(joints):
@@ -350,6 +350,20 @@ def first_align_joints(gt_joints, pred_joints):
     )
     return pred_first
 
+def first_align_joints_return_R_t(gt_joints, pred_joints):
+    """
+    align the first two frames
+    :param gt_joints (T, J, 3)
+    :param pred_joints (T, J, 3)
+    """
+    # (1, 1), (1, 3, 3), (1, 3)
+    s_first, R_first, t_first = align_pcl(
+        gt_joints[:1].reshape(1, -1, 3), pred_joints[:1].reshape(1, -1, 3)
+    )
+    pred_first = (
+        s_first * torch.einsum("tij,tnj->tni", R_first, pred_joints) + t_first[:, None]
+    )
+    return pred_first, R_first, t_first
 
 def local_align_joints(gt_joints, pred_joints):
     """
@@ -492,7 +506,7 @@ def compute_pred_trans_hat(target_trans, pred_trans):
     )[0]
     
     # print("trans align")
-    # print(s, rot, trans)
+    print("trajectory scale alignment", s)
     return pred_trans_hat.numpy(), rot
 
 def align_extrinsics(Y, X, weight=None, fixed_scale=False):

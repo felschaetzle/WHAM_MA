@@ -46,11 +46,11 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args, cfg):
     #######################################################################################################
     annot = open_pkl(gt_pth)
     masks = annot['good_frames_mask']#[:850]
-    gt_trans_world = annot["smpl"]["trans"]#[:850, :][masks]
-    gt_pose_world = annot["smpl"]["poses_root"]#[:850, :][masks]
-    gt_body_pose = annot["smpl"]["poses_body"]#[:850, :][masks]
-    gt_betas = np.repeat(annot["smpl"]["betas"].reshape((1, -1)), repeats=annot["n_frames"], axis=0)
-    gt_cam = annot["camera"]["extrinsics"]#[:850, :][masks]
+    gt_trans_world = annot["smpl"]["trans"][masks]
+    gt_pose_world = annot["smpl"]["poses_root"][masks]
+    gt_body_pose = annot["smpl"]["poses_body"][masks]
+    gt_betas = np.repeat(annot["smpl"]["betas"].reshape((1, -1)), repeats=sum(masks), axis=0)
+    gt_cam = annot["camera"]["extrinsics"][masks]
     gender = annot['gender']
 
     poses_root_cam = transforms.matrix_to_axis_angle(tt(gt_cam[:, :3, :3]) @ transforms.axis_angle_to_matrix(tt(gt_pose_world)))
@@ -61,7 +61,7 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args, cfg):
 
     # Groundtruth global motion
     target_glob = smpl[gender](body_pose=tt(gt_body_pose), global_orient=tt(gt_pose_world), betas=tt(gt_betas), transl=tt(gt_trans_world))
-    target_j3d_glob = target_glob.joints[:, :24][masks]
+    target_j3d_glob = target_glob.joints[:, :24]
     
     #######################################################################################################
     # Prepare WHAM prediction data#########################################################################
@@ -95,7 +95,7 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args, cfg):
     # Prepare SLAM prediction data ########################################################################
     #######################################################################################################
     slam_output = open_pkl(slam_pth)
-
+    slam_output = slam_output[masks]
     pred_cam_pose_orientation = R.from_quat(slam_output[:,3:]).as_matrix()
     pred_cam_pose_trans = slam_output[:,:3]
 
@@ -204,9 +204,16 @@ if __name__ == '__main__':
         help="The sequence ID. This can be any unambiguous prefix of the sequence's name, i.e. for the "
         "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
     )
-    parser.add_argument("--gt_extrinsics", action='store_true', help="Use ground truth camera pose")
 
-    parser.add_argument("--calib", default=True, action='store_true', help="Use ground truth camera pose")
+    parser.add_argument("--gt_extrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=False, 
+                        help="Use ground truth camera pose (True/False)")
+
+    parser.add_argument("--gt_intrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=False, 
+                        help="Use GT intrinsics (True/False)")
+
+    parser.add_argument('--run_smplify', action='store_true', default=True,
+                        help='Run Temporal SMPLify for post processing')
+
 
     parser.add_argument('-c', '--cfg', type=str, default='./configs/yamls/demo.yaml', help='cfg file path')
     parser.add_argument(
@@ -220,10 +227,14 @@ if __name__ == '__main__':
 
     sequence_root = get_sequence_root(args, gt=False)
     if args.gt_extrinsics:
-        wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_camera.pkl"))[0]
-        slam_path = glob(os.path.join(sequence_root, "slam_results.pth"))[0] # unused but argument is required
+        if args.run_smplify:
+            wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_camera.pkl"))[0]
+            slam_path = glob(os.path.join(sequence_root, "slam_results.pth"))[0] # unused but argument is required
+        else:
+            wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_camera_wo_SMPLify.pkl"))[0]
+            slam_path = glob(os.path.join(sequence_root, "slam_results.pth"))[0]
 
-    elif args.calib:
+    elif args.gt_intrinsics:
         wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_intrinsics.pkl"))[0]
         slam_path = glob(os.path.join(sequence_root, "slam_results_gt_intrinsics.pth"))[0]
 
@@ -233,8 +244,11 @@ if __name__ == '__main__':
 
     # Output folder
     if args.gt_extrinsics:
-        sequence = "wham_output_gt_camera_processed.pkl"
-    elif args.calib:
+        if args.run_smplify:
+            sequence = "wham_output_gt_camera_processed.pkl"
+        else:
+            sequence = "wham_output_gt_camera_wo_SMPLify_processed.pkl"
+    elif args.gt_intrinsics:
         sequence = "wham_output_gt_intrinsics_processed.pkl"
     else:
         sequence = "wham_output_DPVO_processed.pkl"
