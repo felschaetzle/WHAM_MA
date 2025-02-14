@@ -30,6 +30,7 @@ from configs import constants as _C
 
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
+from lib.models.smplify.custom_smplify import progressive_global_translation_optimization
 
 try: 
     from lib.models.preproc.slam import SLAMModel
@@ -37,130 +38,6 @@ try:
 except: 
     logger.info('DPVO is not properly installed. Only estimate in local coordinates !')
     _run_global = False
-
-# =============================================================================
-# Progressive Optimization Function
-# =============================================================================
-def progressive_global_translation_optimization(init_pred, keypoints, bbox,
-                                                  gt_extrinsics, cam_intrinsics,
-                                                  smpl, device,
-                                                  length, res):
-    """
-    Optimize global translation progressively over increasing frame windows.
-    
-    Args:
-        init_pred: Dictionary of initial SMPL parameters (e.g., 'pose', 'betas', 'cam',
-                   'trans_world', 'poses_root_world') with shape [T, ...].
-        keypoints: Tensor of 2D keypoints [T, num_keypoints, 3] (last channel = confidence).
-        bbox: Tensor of bounding boxes per frame.
-        gt_extrinsics: Ground-truth extrinsics tensor [T, 4, 4] (or [T, 1, 4, 4]).
-        cam_intrinsics: Camera intrinsics tensor [T, 3, 3] (or [T, 1, 3, 3]).
-        smpl: Your SMPL model.
-        device: Torch device.
-        window_steps: List of frame counts for progressive optimization.
-        img_w, img_h: Image width and height.
-        
-    Returns:
-        current_pred: Dictionary with updated (optimized) parameters.
-        optimized_results: Dictionary mapping window size to the optimized parameters.
-    """
-    # # Debugging
-    gt = joblib.load("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/P4_36_outdoor_long_walk_data.pkl")
-    # gt_smpl = d['smpl']
-
-    # gt_pose = gt_smpl['poses_body'][:length,:]
-    # gt_betas = gt_smpl['betas']
-
-    # gt_poses_root = gt_smpl['poses_root'][:length,:]
-
-    # gt_pose = torch.tensor(gt_pose).float().to(self.device)
-    # gt_poses_root = torch.tensor(gt_poses_root).float().to(self.device)
-
-    # gt_pose = axis_angle_to_matrix(gt_pose.reshape(-1,23,3)).reshape(-1, 23, 3, 3)
-    # gt_poses_root = axis_angle_to_matrix(gt_poses_root).reshape(-1,1, 3, 3)
-
-    # output = self.smpl.get_output(betas=torch.from_numpy(gt_betas).to(self.device).view(-1,10).repeat(length,1), 
-    #                               body_pose=gt_pose, 
-    #                               global_orient=gt_poses_root, 
-    #                               transl=torch.from_numpy(gt_trans).to(self.device),
-    #                               pose2rot=False,
-    #                               return_full_pose=False)
-    # gt_joints = output.joints.cpu()
-
-  
-
-    # transl_wham_world = transl_wham_world.cpu()
-    # transl_cam = transl_cam.cpu()
-    # transl_world = transl_world.cpu()
-    # t_cam_pose = t_cam_pose.cpu()
-    # gt_trans = gt_trans[:length, :3]
-    # wham_joints_world = torch.einsum("tij,tnj->tni", R_cam_pose, wham_joints_cam.to(self.device)) + t_cam_pose[:, None].to(self.device)
-    # wham_joints_world = wham_joints_world.cpu()
-    # num = 0
-    # cam_trans = np.linalg.inv(gt_extrinsics.squeeze().cpu())[:, :3, 3]
-
-
-
-    # Create an instance of CustomSMPLify
-    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=10,
-                                   img_w=res[0], img_h=res[1], device=device)
-    
-    # Copy the initial predictions to update them progressively.
-    current_pred = {k: v.clone() for k, v in init_pred.items()}
-    optimized_results = {}
-    window_size = 100
-    for window in range(window_size, length, window_size):
-        if window + window_size >= length:
-            window = length
-        print(f"\n===== Optimizing frames 1-{window} =====")
-        # Slice the data for the current window.
-        pred_window = {}
-        pred_window['cam'] = current_pred['cam'][:,:window,:]
-        pred_window['pose'] = current_pred['pose'][:,:window,:]
-        pred_window['betas'] = current_pred['betas'][:,:window,:]
-        
-        pred_window['trans_world'] = current_pred['trans_world'][:,:window,:]
-        pred_window['poses_root_world'] = current_pred['poses_root_world'][:,:window,:]
-
-        keypoints_window = keypoints[:window]
-        bbox_window = bbox[:,:window,:]
-        gt_extrinsics_window = gt_extrinsics[:,:window,:,:]
-        
-        # Run optimization on the current window.
-        optimized_pred_window = custom_smplify.fit(
-            pred_window,
-            keypoints_window,
-            bbox_window,
-            gt_extrinsics=gt_extrinsics_window,
-            cam_intrinsics=cam_intrinsics
-        )
-        
-        # Update the current predictions with the optimized values.
-        current_pred['cam'][:,:window,:] = optimized_pred_window['cam']
-        current_pred['pose'][:,:window,:] = optimized_pred_window['pose']
-        current_pred['betas'][:,:window,:] = optimized_pred_window['betas']
-        
-        current_pred['trans_world'][:,:window,:] = optimized_pred_window['trans_world']
-        current_pred['poses_root_world'][:,:window,:,:] = optimized_pred_window['poses_root_world'].squeeze(1).unsqueeze(0)
-
-        optimized_results[window] = {k: v.detach().clone() for k, v in optimized_pred_window.items()}
-
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        gt_trans = gt['smpl']['trans'][:window,:]
-        trans_world_opt = optimized_pred_window['trans_world'].squeeze(0).cpu()
-        trans_world_raw = optimized_pred_window['trans_world_raw'].cpu()
-        ax.scatter(gt_trans[:, 0], gt_trans[:, 1], gt_trans[:, 2], c='r', marker='o', label='GT')
-        ax.scatter(trans_world_opt[:, 0], trans_world_opt[:, 1], trans_world_opt[:, 2], c='b', marker='o', label='Optimized')
-        ax.scatter(trans_world_raw[:,0], trans_world_raw[:,1],trans_world_raw[:,2], c='g', marker='o', label='Aligned')
-        ax.set_xlabel('X Label')
-        ax.set_ylabel('Y Label')
-        ax.set_zlabel('Z Label')
-        ax.legend()
-        plt.show()
-        print("Optimized")
-
-    return current_pred, optimized_results
 
 
 def run(cfg,
