@@ -46,7 +46,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 consistency_weight=10.0, sprior_weight=0.04, 
                 smooth_weight=20.0, sigma=100):
         
-        pose, shape, cam, _ , _ = params
+        pose, shape, cam, _ , _, _ = params
         scale = bbox[..., 2:].unsqueeze(-1) * 200.
 
         # Loss 1. Data term
@@ -88,29 +88,29 @@ class CustomSMPLifyLoss(torch.nn.Module):
         def closure():
             optimizer.zero_grad()
 
-            output = smpl.forward_align(params[0], params[1], trans_opt=params[3], global_orient_opt=params[4])
+            # output = smpl.forward_align(params[0], params[1], trans_opt=params[3], global_orient_opt=params[4])
 
-            joints3d = output.joints.unsqueeze(0)
+            # joints3d = output.joints.unsqueeze(0)
 
             # get rotation and translation from extrinsics matrix
             rotation = self.gt_extrinsics[:, :, :3, :3]
             translation = self.gt_extrinsics[:, :, :3, 3]
             full_joints2d = full_perspective_projection(
-                joints3d,
+                params[5],
                 cam_intrinsics=self.cam_intrinsics,
                 rotation=rotation,
                 translation=translation,
             )
 
-            len = joints3d.shape[1]
-            # make string out of len with leading zeros
-            len_str = str(len-1).zfill(5)
-            frame = cv2.imread("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/images/" + len_str + ".jpg")
+            # len = params[5].shape[1]
+            # # make string out of len with leading zeros
+            # len_str = str(len-1).zfill(5)
+            # frame = cv2.imread("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/images/00000.jpg")
             
-            pred_keypoints = full_joints2d[..., :17, :]
+            # pred_keypoints = full_joints2d[..., :17, :]
              
-            # draw keypoints
-            # for i in range(pred_keypoints.shape[1]):
+            # # draw keypoints
+            # for i in range(pred_keypoints.shape[2]):
             #     x, y = pred_keypoints[0, 0, i].int().tolist()
             #     cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
             
@@ -122,3 +122,26 @@ class CustomSMPLifyLoss(torch.nn.Module):
             return loss
         
         return closure
+    
+
+# class CustomSMPLParamLoss(torch.nn.Module):
+#     def __init__(self):
+        
+#         super().__init__()
+        
+def create_SMPL_param_closure(optimizer, smpl, params):
+    
+    def closure():
+        optimizer.zero_grad()
+
+        output = smpl.forward_align(params[0], params[1], trans_opt=params[3], global_orient_opt=params[4])
+        pred_joints3d = output.joints[:, :17, :]
+
+        # Calculate 3D distance between predicted and GT joints
+        joints3d = params[5][:, :17, :]
+        loss = torch.linalg.norm(pred_joints3d - joints3d, dim=-1).mean()  # Ensure loss is a scalar
+
+        loss.backward()
+        return loss
+    
+    return closure

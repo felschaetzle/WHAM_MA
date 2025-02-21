@@ -57,6 +57,8 @@ class SMPL(_SMPL):
                                  pose2rot=False,
                                  return_full_pose=return_full_pose,
                                  **kwargs)
+            
+            output.joints = output.joints + output.offset.unsqueeze(-2)
             return output
         
         elif global_orient_opt is not None:
@@ -67,6 +69,9 @@ class SMPL(_SMPL):
                                  return_full_pose=return_full_pose,
                                  **kwargs)
             
+        
+            output.joints = output.joints + output.offset.unsqueeze(-2)
+
             return output
 
     def forward(self, 

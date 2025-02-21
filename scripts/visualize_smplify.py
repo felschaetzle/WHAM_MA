@@ -169,36 +169,36 @@ def main(args):
 
     # (GREEN)
     sequence_root_wham = get_sequence_root(args, gt=False)
-    wham_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_DPVO_processed.pkl"))[0]
+    wham_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_intrinsics.pkl"))[0]
     wham_output = joblib.load(wham_iference_data_path)
     inf_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
 
     wham_smpl_seq = SMPLSequence(
         wham_output["pose_world"][:,3:],
         smpl_layer=inf_smpl_layer,
-        poses_root=wham_output["pose_world_hat"][:,:3],
+        poses_root=wham_output["pose_world"][:,:3],
         betas=wham_output["betas"],
         # trans=wham_output["trans_world"],
-        trans=wham_output["trans_world_hat"],
+        trans=wham_output["trans_world"],
         # trans=data["smpl"]["trans"],
-        name="Mesh: WHAM",
+        name="Mesh: WHAM + GT Intrinscis",
         color = (0.2, 0.8, 0.2, 1),
     )    
 
-    wham_gt_intrinsics_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_intrinsics_processed.pkl"))[0]
-    wham_gt_intrinsics_output = joblib.load(wham_gt_intrinsics_iference_data_path)
-    wham_gt_intrinsics_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
-    wham_gt_intrinsics_smpl_seq = SMPLSequence(
-        wham_gt_intrinsics_output["pose_world"][:,3:],
-        smpl_layer=wham_gt_intrinsics_smpl_layer,
-        poses_root=wham_gt_intrinsics_output["pose_world_hat"][:,:3],
-        betas=wham_gt_intrinsics_output["betas"],
-        # trans=wham_output["trans_world"],
-        trans=wham_gt_intrinsics_output["trans_world_hat"],
-        # trans=data["smpl"]["trans"],
-        name="Mesh: WHAM + GT Intrinsics",
-        color = (0.2, 0.8, 0.8, 1),
-    )    
+    # wham_gt_intrinsics_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_intrinsics_processed.pkl"))[0]
+    # wham_gt_intrinsics_output = joblib.load(wham_gt_intrinsics_iference_data_path)
+    # wham_gt_intrinsics_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
+    # wham_gt_intrinsics_smpl_seq = SMPLSequence(
+    #     wham_gt_intrinsics_output["pose_world"][:,3:],
+    #     smpl_layer=wham_gt_intrinsics_smpl_layer,
+    #     poses_root=wham_gt_intrinsics_output["pose_world_hat"][:,:3],
+    #     betas=wham_gt_intrinsics_output["betas"],
+    #     # trans=wham_output["trans_world"],
+    #     trans=wham_gt_intrinsics_output["trans_world_hat"],
+    #     # trans=data["smpl"]["trans"],
+    #     name="Mesh: WHAM + GT Intrinsics",
+    #     color = (0.2, 0.8, 0.8, 1),
+    # )    
 
     # Load 2D information.
     kp2d = data["kp2d"]
@@ -213,12 +213,6 @@ def main(args):
     intrinsics = data["camera"]["intrinsics"]
     extrinsics = data["camera"]["extrinsics"]
     cols, rows = data["camera"]["width"], data["camera"]["height"]
-
-    wham_extrinsics = wham_output["cam_pose_hat"]
-    wham_extrinsics = np.linalg.inv(wham_extrinsics)
-
-    wham_extrinsics_gt_intrinsics = wham_gt_intrinsics_output["cam_pose_hat"]
-    wham_extrinsics_gt_intrinsics = np.linalg.inv(wham_extrinsics_gt_intrinsics)
 
     # Create the viewer
     viewer_size = None
@@ -236,10 +230,6 @@ def main(args):
     intrinsics = np.repeat(intrinsics[np.newaxis, :, :], len(extrinsics), axis=0)
 
     gt_camera = OpenCVCamera(intrinsics, extrinsics[:, :3], cols, rows, viewer=viewer, name="GT Camera")
-
-    wham_camera = OpenCVCamera(intrinsics, wham_extrinsics[:, :3], cols, rows, viewer=viewer, name="DPVO Camera")
-
-    wham_camera_gt_intrinsics = OpenCVCamera(intrinsics, wham_extrinsics_gt_intrinsics[:, :3], cols, rows, viewer=viewer, name="DPVO GT Intrinsics Camera")
     
     # Display the images on a billboard.
     raw_images_bb = Billboard.from_camera_and_distance(
@@ -255,9 +245,9 @@ def main(args):
     # Add everything to the scene.
 
     if args.gt_camera:
-        viewer.scene.add(raw_images_bb, gt_camera, wham_camera, gt_smpl_seq, wham_smpl_seq, wham_gt_intrinsics_smpl_seq)
+        viewer.scene.add(raw_images_bb, gt_camera, gt_smpl_seq, wham_smpl_seq)
     else:
-        viewer.scene.add(gt_camera, wham_camera, gt_smpl_seq, wham_smpl_seq, raw_images_bb)
+        viewer.scene.add(gt_camera, gt_smpl_seq, wham_smpl_seq, raw_images_bb)
 
     if args.draw_trajectories:
         # Add a path trail for the SMPL root trajectory.
@@ -277,13 +267,6 @@ def main(args):
             name="SMPL Trajectory: WHAM",
         )
 
-        wham_gt_intrinsics_path = LinesTrail(
-            wham_gt_intrinsics_smpl_seq.joints[:, 0],
-            r_base=0.003,
-            color=(0.2, 0.2, 0.8, 0.8),
-            cast_shadow=False,
-            name="SMPL Trajectory: WHAM + GT Intrinsics",
-        )
 
         # wham_gt_cam_path = LinesTrail(
         #     wham_gt_cam_smpl_seq.joints[:, 0],
@@ -304,28 +287,13 @@ def main(args):
             name="Camera Trajectory: GT",
         )
 
-        wham_cam_pos = get_camera_position(wham_extrinsics)
-        dpvo_path = LinesTrail(
-            wham_cam_pos,
-            r_base=0.003,
-            color=(0.5, 0.8, 0.8, 1),
-            cast_shadow=False,
-            name="Camera Trajectory: DPVO",
-        )
+  
 
-        wham_gt_intrinsics_cam_pos = get_camera_position(wham_extrinsics_gt_intrinsics)
-        dpvo_gt_intrinsics_cam_path = LinesTrail(
-            wham_gt_intrinsics_cam_pos,
-            r_base=0.003,
-            color=(0.5, 0.8, 0.8, 1),
-            cast_shadow=False,
-            name="Camera Trajectory: DPVO + GT Intrinsics",
-        )
 
         if args.gt_camera:
-            viewer.scene.add(gt_camera_path, dpvo_path, gt_path, wham_path, wham_gt_intrinsics_path)
+            viewer.scene.add(gt_camera_path, gt_path, wham_path)
         else:
-            viewer.scene.add(gt_camera_path, dpvo_path, gt_path, wham_path)
+            viewer.scene.add(gt_camera_path, gt_path, wham_path)
 
     # Remaining viewer setup.
     if args.view_from_camera:

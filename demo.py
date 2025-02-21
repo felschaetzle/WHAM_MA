@@ -215,17 +215,17 @@ def run(cfg,
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
         # smplify = CustomSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
         # pred = smplify.fit(pred, input_keypoints, **kwargs)
-        current_pred, optimized_results = progressive_global_translation_optimization(
+        pred = progressive_global_translation_optimization(
             pred, input_keypoints, kwargs['bbox'],
             kwargs['gt_extrinsics'], kwargs['cam_intrinsics'],
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
 
-        with torch.no_grad():
-            network.pred_pose = pred['pose']
-            network.pred_shape = pred['betas']
-            network.pred_cam = pred['cam']
-            output = network.forward_smpl(**kwargs)
-            pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+        # with torch.no_grad():
+        #     network.pred_pose = pred['pose']
+        #     network.pred_shape = pred['betas']
+        #     network.pred_cam = pred['cam']
+        #     output = network.forward_smpl(**kwargs)
+        #     pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
 
         # smplify = TemporalSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
         # input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index].cpu().numpy()
