@@ -208,17 +208,20 @@ if __name__ == '__main__':
     parser.add_argument("--gt_extrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=False, 
                         help="Use ground truth camera pose (True/False)")
 
-    parser.add_argument("--gt_intrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=False, 
+    parser.add_argument("--gt_intrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=True, 
                         help="Use GT intrinsics (True/False)")
 
-    parser.add_argument('--run_smplify', action='store_true', default=True,
+    parser.add_argument('--run_smplify', action='store_true', default=False,
                         help='Run Temporal SMPLify for post processing')
 
+    parser.add_argument('--only_run_metrics', action='store_true', default=False)
 
     parser.add_argument('-c', '--cfg', type=str, default='./configs/yamls/demo.yaml', help='cfg file path')
     parser.add_argument(
         "opts", default=None, nargs=argparse.REMAINDER,
         help="Modify config options using the command-line")
+    
+    parser.add_argument("--baseline", action="store_true", default=False, help="Use baseline model")
     
     args = parser.parse_args()
     
@@ -234,10 +237,13 @@ if __name__ == '__main__':
             wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_camera_wo_SMPLify.pkl"))[0]
             slam_path = glob(os.path.join(sequence_root, "slam_results.pth"))[0]
 
-    elif args.gt_intrinsics:
+    elif args.gt_intrinsics and not args.baseline:
         wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_intrinsics.pkl"))[0]
         slam_path = glob(os.path.join(sequence_root, "slam_results_gt_intrinsics.pth"))[0]
 
+    elif args.gt_intrinsics and args.baseline:
+        wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_intrinsics_baseline.pkl"))[0]
+        slam_path = glob(os.path.join(sequence_root, "slam_results_gt_intrinsics.pth"))[0]
     else:
         wham_data_path = glob(os.path.join(sequence_root, "*_output_DPVO.pkl"))[0]
         slam_path = glob(os.path.join(sequence_root, "slam_results.pth"))[0]
@@ -248,8 +254,10 @@ if __name__ == '__main__':
             sequence = "wham_output_gt_camera_processed.pkl"
         else:
             sequence = "wham_output_gt_camera_wo_SMPLify_processed.pkl"
-    elif args.gt_intrinsics:
+    elif args.gt_intrinsics and not args.baseline:
         sequence = "wham_output_gt_intrinsics_processed.pkl"
+    elif args.gt_intrinsics and args.baseline:
+        sequence = "wham_output_gt_intrinsics_baseline.pkl"
     else:
         sequence = "wham_output_DPVO_processed.pkl"
     output_pth = osp.join(sequence_root, sequence)

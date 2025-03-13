@@ -22,7 +22,7 @@ def execute_demo(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False):
 			str(gt_extrinsics)
 			]
 
-		print(command)
+		# print(command)
 
 		result = subprocess.run(command)
 
@@ -33,7 +33,7 @@ def execute_demo(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False):
 		print(f"Error running demo.py")
 		print(e.stderr)
 
-def execute_align(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False):
+def execute_align(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False, base_line=False):
 	try:
 		command = [
 			"python", 
@@ -45,10 +45,11 @@ def execute_align(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False):
 			"--gt_intrinsics",
 			str(gt_intrinsics),
 			"--gt_extrinsics",
-			str(gt_extrinsics)
+			str(gt_extrinsics),
+			# "--baseline",
 			]
 
-		print(command)
+		# print(command)
 
 		result = subprocess.run(command)
 
@@ -92,14 +93,14 @@ def main():
 
 			# execute_align(subject_id, sequence_id, gt_intrinsics=False, gt_extrinsics=False)
 
-			# execute_align(subject_id, sequence_id, gt_intrinsics=True, gt_extrinsics=False)
+			# execute_align(subject_id, sequence_id, gt_intrinsics=True, gt_extrinsics=False, base_line=True)
 
 			execute_align(subject_id, sequence_id, gt_intrinsics=True, gt_extrinsics=True)
 
 
 
 		else:
-			print("FUCK!")
+			print("FAIL!")
 
 if __name__ == "__main__":
 	main()

@@ -68,7 +68,7 @@ class CustomSMPLify():
             optimizer.zero_grad()
             loss = optimizer.step(closure)
             msg = f'Loss: {loss.item():.1f}'
-            print(j, msg)
+            # print(j, msg)
             j_bar.set_postfix_str(msg)
 
         print(f"Final joint opt loss: {loss.item():.1f}")
@@ -161,28 +161,28 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
         optimized_results: Dictionary mapping window size to the optimized parameters.
     """
     # # Debugging
-    gt = joblib.load("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/P4_36_outdoor_long_walk_data.pkl")
+    # gt = joblib.load("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/P4_36_outdoor_long_walk_data.pkl")
 
-    gt_smpl = gt['smpl']
+    # gt_smpl = gt['smpl']
 
-    gt_pose = gt_smpl['poses_body']
-    gt_betas = gt_smpl['betas']
-    gt_t = gt['smpl']['trans']
-    gt_poses_root = gt_smpl['poses_root']
+    # gt_pose = gt_smpl['poses_body']
+    # gt_betas = gt_smpl['betas']
+    # gt_t = gt['smpl']['trans']
+    # gt_poses_root = gt_smpl['poses_root']
 
-    gt_pose = torch.tensor(gt_pose).float().to(device)
-    gt_poses_root = torch.tensor(gt_poses_root).float().to(device)
+    # gt_pose = torch.tensor(gt_pose).float().to(device)
+    # gt_poses_root = torch.tensor(gt_poses_root).float().to(device)
 
-    gt_pose = axis_angle_to_matrix(gt_pose.reshape(-1,23,3)).reshape(-1, 23, 3, 3)
-    gt_poses_root = axis_angle_to_matrix(gt_poses_root).reshape(-1,1, 3, 3)
+    # gt_pose = axis_angle_to_matrix(gt_pose.reshape(-1,23,3)).reshape(-1, 23, 3, 3)
+    # gt_poses_root = axis_angle_to_matrix(gt_poses_root).reshape(-1,1, 3, 3)
 
-    output = smpl.get_output(betas=torch.from_numpy(gt_betas).to(device).view(-1,10).repeat(1,1), 
-                                body_pose=gt_pose, 
-                                global_orient=gt_poses_root, 
-                                transl=torch.from_numpy(gt_t).to(device),
-                                pose2rot=False,
-                                return_full_pose=False)
-    gt_joints = output.joints.cpu()
+    # output = smpl.get_output(betas=torch.from_numpy(gt_betas).to(device).view(-1,10).repeat(1,1), 
+    #                             body_pose=gt_pose, 
+    #                             global_orient=gt_poses_root, 
+    #                             transl=torch.from_numpy(gt_t).to(device),
+    #                             pose2rot=False,
+    #                             return_full_pose=False)
+    # gt_joints = output.joints.cpu()
 
     """"    
     gt_smpl = d['smpl']
@@ -447,7 +447,7 @@ def W_MPJPE_align(cam, bbox, res, cam_intrinsics, smpl, device, pose, betas, tra
     # window_size = 100
     transl_world = transl_wham_world.clone()
     poses_root_world = poses_root_wham_world.clone()
-    gt = joblib.load("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/P4_36_outdoor_long_walk_data.pkl")
+    # gt = joblib.load("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/P4_36_outdoor_long_walk_data.pkl")
     joints3d_world = []
     for window in range(0, n, window_size):
         end_window = window + window_size

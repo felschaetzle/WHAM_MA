@@ -4,6 +4,8 @@ import os.path as osp
 from glob import glob
 from collections import defaultdict
 
+from lib.utils import transforms
+
 import cv2
 import torch
 import joblib
@@ -135,7 +137,17 @@ def run(cfg,
         return
     # slam_results = joblib.load(osp.join(output_pth, 'slam_results.pth'))
     cam_angvel = convert_dpvo_to_cam_angvel(slam_results, fps).to(cfg.DEVICE).unsqueeze(0)
+    
+    # remove elments from cam_angvel that are not in the eval_loader.dataset.labels['frame_id'][emdb_sequence_index]
+    filter_ids = torch.unique(eval_loader.dataset.labels['frame_id'][emdb_sequence_index])
+    cam_angvel = cam_angvel[:,filter_ids, :]
+
     print("Loading data from eval loader")
+
+
+    length_update = eval_loader.dataset.labels['frame_id'][emdb_sequence_index].shape[0] - 1
+    print("Found # frames in dataset: ", length)
+    print("Found # frames in eval loader: ", length_update)
 
     if args.gt_intrinsics:
         calib_data = np.loadtxt(calib, delimiter=" ")
@@ -146,8 +158,8 @@ def run(cfg,
         gt_intrinsics[1,1] = fy
         gt_intrinsics[1,2] = cy
         gt_intrinsics = torch.tensor(gt_intrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-        print("GT intrinsics")
-        print(gt_intrinsics)
+        # print("GT intrinsics")
+        # print(gt_intrinsics)
 
     sequence_root = get_sequence_root(args)
     gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
@@ -159,10 +171,13 @@ def run(cfg,
 
     results = defaultdict(dict)
     
+    # WHAM uses Y-down coordinate system, while EMDB dataset uses Y-up one.
+    yup2ydown = transforms.axis_angle_to_matrix(torch.tensor([[np.pi, 0, 0]])).float().to(cfg.DEVICE)
+
     with torch.no_grad():
         # Forward pass with flipped input
         flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=True)
-        x, inits, features, kwargs, gt = prepare_batch(flipped_batch, cfg.DEVICE)
+        x, inits, features, kwargs, gt = prepare_batch(flipped_batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
         if args.gt_extrinsics and args.gt_intrinsics:
             print("Use GT intrinsics and GT extrinsics")
             kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
@@ -176,14 +191,22 @@ def run(cfg,
             print("Don't replace intrinsics and use DPVO with GT intrinsics")
             kwargs['cam_angvel'] = cam_angvel
 
+        # Align with groundtruth data to the first frame
+        cam2yup = flipped_batch['R'][0][:1].to(cfg.DEVICE)
+        cam2ydown = cam2yup @ yup2ydown
+        cam2root = transforms.rotation_6d_to_matrix(inits[1][:, 0, 0])
+        ydown2root = cam2ydown.mT @ cam2root
+        ydown2root = transforms.matrix_to_rotation_6d(ydown2root)
+        kwargs['init_root'][:, 0] = ydown2root
+
         flipped_pred = network(x, inits, features, return_y_up=True, **kwargs)
         
         # Forward pass with normal input
-        flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=False)
-        x, inits, features, kwargs, gt = prepare_batch(flipped_batch, cfg.DEVICE)
+        batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=False)
+        x, inits, features, kwargs, gt = prepare_batch(batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
         if args.gt_extrinsics and args.gt_intrinsics:
             kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
-
+            
         elif args.gt_intrinsics:
             kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
             kwargs['cam_angvel'] = cam_angvel
@@ -209,6 +232,7 @@ def run(cfg,
         cam_angvel = kwargs['cam_angvel']
         pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
 
+    # if True:
     if args.run_smplify:
         # convert gt extrinsics to torch tensor
         kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
@@ -257,11 +281,11 @@ def run(cfg,
     if save_pkl:
         if args.gt_extrinsics and args.gt_intrinsics:
             if args.run_smplify:
-                joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera.pkl"))
+                joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera_baseline.pkl"))
             else:
                 joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera_wo_SMPLify.pkl"))
         elif args.gt_intrinsics:
-            joblib.dump(results, osp.join(output_pth, "wham_output_gt_intrinsics.pkl"))
+            joblib.dump(results, osp.join(output_pth, "wham_output_gt_intrinsics_baseline.pkl"))
         else:
             joblib.dump(results, osp.join(output_pth, "wham_output_DPVO.pkl"))
      
@@ -285,7 +309,7 @@ if __name__ == '__main__':
     parser.add_argument("--gt_intrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=True, 
                         help="Use GT intrinsics (True/False)")
 
-    parser.add_argument("--gt_extrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=False, 
+    parser.add_argument("--gt_extrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=True, 
                         help="Use ground truth camera pose (True/False)")
 
     parser.add_argument('--video', type=str, 
@@ -304,7 +328,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_pkl', action='store_true', default=True,
                         help='Save output as pkl file')
     
-    parser.add_argument('--run_smplify', action='store_true', default=True,
+    parser.add_argument('--run_smplify', action='store_true', default=False,
                         help='Run Temporal SMPLify for post processing')
     
     parser.add_argument("--subject", type=str, default=subject_id, help="The subject ID, P0 - P9.")

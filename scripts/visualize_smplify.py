@@ -169,7 +169,7 @@ def main(args):
 
     # (GREEN)
     sequence_root_wham = get_sequence_root(args, gt=False)
-    wham_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_intrinsics.pkl"))[0]
+    wham_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_camera_baseline.pkl"))[0]
     wham_output = joblib.load(wham_iference_data_path)
     inf_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
 
