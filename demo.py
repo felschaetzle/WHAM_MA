@@ -34,6 +34,11 @@ from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
 from lib.models.smplify.custom_smplify import progressive_global_translation_optimization
 
+from smplx import SMPL
+
+from configs.config import get_cfg_defaults
+from configs.config import parse_args
+
 try: 
     from lib.models.preproc.slam import SLAMModel
     _run_global = True
@@ -175,46 +180,24 @@ def run(cfg,
     yup2ydown = transforms.axis_angle_to_matrix(torch.tensor([[np.pi, 0, 0]])).float().to(cfg.DEVICE)
 
     with torch.no_grad():
-        # Forward pass with flipped input
-        flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=True)
-        x, inits, features, kwargs, gt = prepare_batch(flipped_batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
-        if args.gt_extrinsics and args.gt_intrinsics:
-            print("Use GT intrinsics and GT extrinsics")
-            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
 
-        elif args.gt_intrinsics:
-            print("Use GT intrinsics and use DPVO with GT intrinsics")
-            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
-            kwargs['cam_angvel'] = cam_angvel
-            
-        else:
-            print("Don't replace intrinsics and use DPVO with GT intrinsics")
-            kwargs['cam_angvel'] = cam_angvel
+        batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=False)
+        x, inits, features, kwargs, gt = prepare_batch(batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
 
-        # Align with groundtruth data to the first frame
-        cam2yup = flipped_batch['R'][0][:1].to(cfg.DEVICE)
+
+        cam2yup = batch['R'][0][:1].to(cfg.DEVICE)
         cam2ydown = cam2yup @ yup2ydown
         cam2root = transforms.rotation_6d_to_matrix(inits[1][:, 0, 0])
         ydown2root = cam2ydown.mT @ cam2root
         ydown2root = transforms.matrix_to_rotation_6d(ydown2root)
         kwargs['init_root'][:, 0] = ydown2root
 
-        flipped_pred = network(x, inits, features, return_y_up=True, **kwargs)
-        
-        # Forward pass with normal input
-        batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=False)
-        x, inits, features, kwargs, gt = prepare_batch(batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
-        if args.gt_extrinsics and args.gt_intrinsics:
-            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
-            
-        elif args.gt_intrinsics:
-            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
-            kwargs['cam_angvel'] = cam_angvel
-            
-        else:
-            kwargs['cam_angvel'] = cam_angvel
+        # Forward pass with flipped input
+        flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=True)
+        f_x, f_inits, f_features, f_kwargs, f_gt = prepare_batch(flipped_batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
 
-        pred = network(x, inits, features, return_y_up=True, **kwargs)
+        flipped_pred = network(f_x, f_inits, f_features, **f_kwargs)
+        pred = network(x, inits, features, **kwargs)
 
         # Merge two predictions
         flipped_pose, flipped_shape = flipped_pred['pose'].squeeze(0), flipped_pred['betas'].squeeze(0)
@@ -229,8 +212,8 @@ def run(cfg,
         network.pred_shape = avg_shape.view_as(network.pred_shape)
         network.pred_contact = avg_contact.view_as(network.pred_contact)
         output = network.forward_smpl(**kwargs)
-        cam_angvel = kwargs['cam_angvel']
-        pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+        # cam_angvel = kwargs['cam_angvel']
+        pred = network.refine_trajectory(output, return_y_up=True, **kwargs)
 
     # if True:
     if args.run_smplify:
@@ -282,12 +265,16 @@ def run(cfg,
         if args.gt_extrinsics and args.gt_intrinsics:
             if args.run_smplify:
                 joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera_baseline.pkl"))
+                print("Save results to ", osp.join(output_pth, "wham_output_gt_camera_baseline.pkl"))
             else:
                 joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera_wo_SMPLify.pkl"))
+                print("Save results to ", osp.join(output_pth, "wham_output_gt_camera_wo_SMPLify.pkl"))
         elif args.gt_intrinsics:
             joblib.dump(results, osp.join(output_pth, "wham_output_gt_intrinsics_baseline.pkl"))
+            print("Save results to ", osp.join(output_pth, "wham_output_gt_intrinsics_baseline.pkl"))
         else:
             joblib.dump(results, osp.join(output_pth, "wham_output_DPVO.pkl"))
+            print("Save results to ", osp.join(output_pth, "wham_output_DPVO.pkl"))
      
     # Visualize
     if visualize:
@@ -311,10 +298,6 @@ if __name__ == '__main__':
 
     parser.add_argument("--gt_extrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=True, 
                         help="Use ground truth camera pose (True/False)")
-
-    parser.add_argument('--video', type=str, 
-                        default='/mnt/hdd/emdb_dataset/P5/40_indoor_walk_big_circle/raw.mov', 
-                        help='input video path or youtube link')
 
     parser.add_argument('--output_pth', type=str, default=_C.PATHS.WHAM_OUTPUT, 
                         help='output folder to write results')
@@ -346,8 +329,10 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    cfg = get_cfg_defaults()
-    cfg.merge_from_file('configs/yamls/demo.yaml')
+    # cfg = get_cfg_defaults()
+    # cfg.merge_from_file('configs/yamls/demo.yaml')
+
+    cfg, cfg_file, args = parse_args(test=True)
     
     logger.info(f'GPU name -> {torch.cuda.get_device_name()}')
     logger.info(f'GPU feat -> {torch.cuda.get_device_properties("cuda")}')    
@@ -355,6 +340,7 @@ if __name__ == '__main__':
     # ========= Load WHAM ========= #
     smpl_batch_size = cfg.TRAIN.BATCH_SIZE * cfg.DATASET.SEQLEN
     smpl = build_body_model(cfg.DEVICE, smpl_batch_size)
+    # smpl = SMPL(_C.BMODEL.FLDR).to(cfg.DEVICE)
     network = build_network(cfg, smpl)
     network.eval()
     
@@ -363,6 +349,7 @@ if __name__ == '__main__':
 
     # Output folder
     sequence = args.subject + "_" + args.sequence
+    print(sequence)
     output_pth = osp.join(args.output_pth, sequence)
     os.makedirs(output_pth, exist_ok=True)
     
@@ -374,5 +361,4 @@ if __name__ == '__main__':
         save_pkl=args.save_pkl,
         visualize=args.visualize)
         
-    print()
     logger.info('Done !')
