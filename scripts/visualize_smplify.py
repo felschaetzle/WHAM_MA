@@ -116,9 +116,7 @@ def get_sequence_root(args, gt=True):
     if gt:
         """Parse the path of the sequence to be visualized."""
         sequence_id = "{:0>2d}".format(int(args.sequence))
-        print(os.path.join(EMDB_ROOT,args.subject, sequence_id + "*"))
         candidates = glob(os.path.join(EMDB_ROOT,args.subject, sequence_id + "*"))
-        print(candidates)
         if len(candidates) == 0:
             raise ValueError(f"Could not find sequence {args.sequence} for subject {args.subject}.")
         elif len(candidates) > 1:
@@ -129,18 +127,13 @@ def get_sequence_root(args, gt=True):
     else:
         WHAM_OUTPUT = _C.PATHS.WHAM_OUTPUT
         """Parse the path of the sequence to be visualized."""
-        print
         sequence_id = "{:0>2d}".format(int(args.sequence))
-        print(os.path.join(WHAM_OUTPUT,args.subject+"_"+sequence_id))
         candidates = glob(os.path.join(WHAM_OUTPUT,args.subject+"_"+sequence_id))
-        print(candidates)
         if len(candidates) == 0:
             raise ValueError(f"Could not find sequence {args.sequence} for subject {args.subject}.")
         elif len(candidates) > 1:
             raise ValueError(f"Sequence ID {args.sequence}* for subject {args.subject} is ambiguous.")
         return candidates[0]
-
-
 
 
 def main(args):
@@ -151,15 +144,13 @@ def main(args):
     with open(data_file, "rb") as f:
         data = pkl.load(f)
 
-    print(data["good_frames_mask"].sum())
-
     # Set up SMPL layer (RED).
     gender = data["gender"]
-    gt_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
+    smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
 
     gt_smpl_seq = SMPLSequence(
         data["smpl"]["poses_body"],
-        smpl_layer=gt_smpl_layer,
+        smpl_layer=smpl_layer,
         poses_root=data["smpl"]["poses_root"],
         betas=data["smpl"]["betas"].reshape((1, -1)),
         trans=data["smpl"]["trans"],
@@ -169,36 +160,69 @@ def main(args):
 
     # (GREEN)
     sequence_root_wham = get_sequence_root(args, gt=False)
-    wham_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_camera_baseline.pkl"))[0]
-    wham_output = joblib.load(wham_iference_data_path)
-    inf_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
 
-    wham_smpl_seq = SMPLSequence(
-        wham_output["pose_world"][:,3:],
-        smpl_layer=inf_smpl_layer,
-        poses_root=wham_output["pose_world"][:,:3],
-        betas=wham_output["betas"],
-        # trans=wham_output["trans_world"],
-        trans=wham_output["trans_world"],
-        # trans=data["smpl"]["trans"],
-        name="Mesh: WHAM + GT Intrinscis",
+    path = glob(os.path.join(sequence_root_wham, "eval.pkl"))[0]
+    output = joblib.load(path)
+    wham_seq = SMPLSequence(
+        output["pose_world"][:,3:],
+        smpl_layer=smpl_layer,
+        poses_root=output["pose_world_hat"][:,:3],
+        betas=output["betas"],
+        trans=output["trans_world_hat"],
+        name="evel_emdb.py",
         color = (0.2, 0.8, 0.2, 1),
     )    
 
-    # wham_gt_intrinsics_iference_data_path = glob(os.path.join(sequence_root_wham, "*_output_gt_intrinsics_processed.pkl"))[0]
-    # wham_gt_intrinsics_output = joblib.load(wham_gt_intrinsics_iference_data_path)
-    # wham_gt_intrinsics_smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
-    # wham_gt_intrinsics_smpl_seq = SMPLSequence(
-    #     wham_gt_intrinsics_output["pose_world"][:,3:],
-    #     smpl_layer=wham_gt_intrinsics_smpl_layer,
-    #     poses_root=wham_gt_intrinsics_output["pose_world_hat"][:,:3],
-    #     betas=wham_gt_intrinsics_output["betas"],
-    #     # trans=wham_output["trans_world"],
-    #     trans=wham_gt_intrinsics_output["trans_world_hat"],
-    #     # trans=data["smpl"]["trans"],
-    #     name="Mesh: WHAM + GT Intrinsics",
-    #     color = (0.2, 0.8, 0.8, 1),
+    path = glob(os.path.join(sequence_root_wham, "smplify.pkl"))[0]
+    output = joblib.load(path)
+    smplify_seq = SMPLSequence(
+        output["pose_world"][:,3:],
+        smpl_layer=smpl_layer,
+        poses_root=output["pose_world_hat"][:,:3],
+        betas=output["betas"],
+        # trans=wham_output["trans_world"],
+        trans=output["trans_world_hat"],
+        # trans=data["smpl"]["trans"],
+        name="eval + smplify",
+        color = (0.2, 0.2, 0.8, 1),
+    )    
+
+    path = glob(os.path.join(sequence_root_wham, "baseline.pkl"))[0]
+    output = joblib.load(path)
+    baseline_seq = SMPLSequence(
+        output["pose_world"][:,3:],
+        smpl_layer=smpl_layer,
+        poses_root=output["pose_world"][:,:3],
+        betas=output["betas"],
+        trans=output["trans_world"],
+        name="eval + baseline",
+        color = (0.2, 0.8, 0.8, 1),
+    )    
+
+    # path = glob(os.path.join(sequence_root_wham, "baseline.pkl"))[0]
+    # output = joblib.load(path)
+    # baseline_test_seq = SMPLSequence(
+    #     output["pose_world"][:,3:],
+    #     smpl_layer=smpl_layer,
+    #     poses_root=output["pose_world_hat"][:,:3],
+    #     betas=output["betas"],
+    #     trans=output["trans_world_hat"],
+    #     name="eval + baseline test",
+    #     color = (0.8, 0.8, 0.8, 1),
     # )    
+
+    # Create the viewer
+    viewer_size = None
+    if args.view_from_camera:
+        target_height = 1080
+        width = int(target_height * cols / rows)
+        viewer_size = (width, target_height)
+
+        # If we view it from the camera drawing the 3D trajectories might be disturbing, suppress it.
+        args.draw_trajectories = False
+
+    viewer = Viewer(size=viewer_size)
+    viewer.scene.add(gt_smpl_seq, wham_seq, smplify_seq, baseline_seq)
 
     # Load 2D information.
     kp2d = data["kp2d"]
@@ -213,18 +237,6 @@ def main(args):
     intrinsics = data["camera"]["intrinsics"]
     extrinsics = data["camera"]["extrinsics"]
     cols, rows = data["camera"]["width"], data["camera"]["height"]
-
-    # Create the viewer
-    viewer_size = None
-    if args.view_from_camera:
-        target_height = 1080
-        width = int(target_height * cols / rows)
-        viewer_size = (width, target_height)
-
-        # If we view it from the camera drawing the 3D trajectories might be disturbing, suppress it.
-        args.draw_trajectories = False
-
-    viewer = Viewer(size=viewer_size)
 
     # Prepare the camera.
     intrinsics = np.repeat(intrinsics[np.newaxis, :, :], len(extrinsics), axis=0)
@@ -242,12 +254,8 @@ def main(args):
         name="Image",
     )
 
-    # Add everything to the scene.
+    viewer.scene.add(raw_images_bb, gt_camera)
 
-    if args.gt_camera:
-        viewer.scene.add(raw_images_bb, gt_camera, gt_smpl_seq, wham_smpl_seq)
-    else:
-        viewer.scene.add(gt_camera, gt_smpl_seq, wham_smpl_seq, raw_images_bb)
 
     if args.draw_trajectories:
         # Add a path trail for the SMPL root trajectory.
@@ -256,28 +264,32 @@ def main(args):
             r_base=0.003,
             color=(0.8, 0.2, 0.2, 0.8),
             cast_shadow=False,
-            name="SMPL Trajectory: GT",
+            name="Trajectory: GT",
         )
 
         wham_path = LinesTrail(
-            wham_smpl_seq.joints[:, 0],
+            wham_seq.joints[:, 0],
             r_base=0.003,
             color=(0.2, 0.8, 0.2, 0.8),
             cast_shadow=False,
-            name="SMPL Trajectory: WHAM",
+            name="Trajectory: WHAM",
         )
 
+        smplify_path = LinesTrail(
+            smplify_seq.joints[:, 0],
+            r_base=0.003,
+            color=(0.2, 0.2, 0.8, 0.8),
+            cast_shadow=False,
+            name="Trajectory: SMPLify",
+        )
+        baseline_path = LinesTrail(
+            baseline_seq.joints[:, 0],
+            r_base=0.003,
+            color=(0.2, 0.8, 0.8, 0.8),
+            cast_shadow=False,
+            name="Trajectory: Baseline",
+        )
 
-        # wham_gt_cam_path = LinesTrail(
-        #     wham_gt_cam_smpl_seq.joints[:, 0],
-        #     r_base=0.003,
-        #     color=(0.2, 0.8, 0.8, 0.8),
-        #     cast_shadow=False,
-        #     name="SMPL Trajectory: WHAM + GT Cam",
-        # )
-
-        # Add a path trail for the camera trajectory.
-        # A fixed path (i.e. not a trail), could also be enabled in the GUI on the camera node by clicking "Show path".
         cam_pos = get_camera_position(extrinsics)
         gt_camera_path = LinesTrail(
             cam_pos,
@@ -286,14 +298,7 @@ def main(args):
             cast_shadow=False,
             name="Camera Trajectory: GT",
         )
-
-  
-
-
-        if args.gt_camera:
-            viewer.scene.add(gt_camera_path, gt_path, wham_path)
-        else:
-            viewer.scene.add(gt_camera_path, gt_path, wham_path)
+        viewer.scene.add(gt_path, wham_path, smplify_path, baseline_path, gt_camera_path)
 
     # Remaining viewer setup.
     if args.view_from_camera:
@@ -328,6 +333,7 @@ if __name__ == "__main__":
         "--view_from_camera",
         action="store_true",
         help="View it from the camera's perspective.",
+        default=False
     )
     parser.add_argument(
         "--draw_2d",

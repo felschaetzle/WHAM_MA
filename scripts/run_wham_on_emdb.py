@@ -7,7 +7,7 @@ from custom_utils import find_substring
 DATASET_DIR = "/mnt/hdd/emdb_dataset/"
 
 
-def execute_demo(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False):
+def execute_demo(sub_id, seq_id, args=None):
 	try:
 		command = [
 			"python", 
@@ -15,14 +15,9 @@ def execute_demo(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False):
 			"--subject",
 			sub_id,
 			"--sequence",
-			seq_id,
-			"--gt_intrinsics",
-			str(gt_intrinsics),
-			"--gt_extrinsics",
-			str(gt_extrinsics)
-			]
-
-		# print(command)
+			seq_id]
+		if args is not None:
+			command.extend(args)
 
 		result = subprocess.run(command)
 
@@ -33,7 +28,7 @@ def execute_demo(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False):
 		print(f"Error running demo.py")
 		print(e.stderr)
 
-def execute_align(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False, base_line=False):
+def execute_align(sub_id, seq_id, args=None):
 	try:
 		command = [
 			"python", 
@@ -41,15 +36,9 @@ def execute_align(sub_id, seq_id, gt_intrinsics=False, gt_extrinsics=False, base
 			"--subject",
 			sub_id,
 			"--sequence",
-			seq_id,
-			"--gt_intrinsics",
-			str(gt_intrinsics),
-			"--gt_extrinsics",
-			str(gt_extrinsics),
-			# "--baseline",
-			]
-
-		# print(command)
+			seq_id]
+		if args is not None:
+			command.extend(args)
 
 		result = subprocess.run(command)
 
@@ -83,22 +72,13 @@ def main():
 
 			print(subject_id, sequence_id)
 
-			# execute_script("create_mov_file.py", subject_id, sequence_id)
+			execute_demo(subject_id, sequence_id)
+			# execute_demo(subject_id, sequence_id, ["--run_smplify"])
+			# execute_demo(subject_id, sequence_id, ["--run_baseline"])
 
-			# execute_demo(subject_id, sequence_id, gt_intrinsics=False, gt_extrinsics=False)
-
-			# execute_demo(subject_id, sequence_id, gt_intrinsics=True, gt_extrinsics=False)
-
-			execute_demo(subject_id, sequence_id, gt_intrinsics=True, gt_extrinsics=True)
-
-			# execute_align(subject_id, sequence_id, gt_intrinsics=False, gt_extrinsics=False)
-
-			# execute_align(subject_id, sequence_id, gt_intrinsics=True, gt_extrinsics=False, base_line=True)
-
-			execute_align(subject_id, sequence_id, gt_intrinsics=True, gt_extrinsics=True)
-
-
-
+			execute_align(subject_id, sequence_id)
+			# execute_align(subject_id, sequence_id, ["--run_smplify"])
+			# execute_align(subject_id, sequence_id, ["--run_baseline"])
 		else:
 			print("FAIL!")
 

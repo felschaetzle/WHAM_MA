@@ -5,7 +5,6 @@ import torch
 from smplx import SMPL
 import sys
 sys.path.append('/home/felix/WHAM_MA')
-print(sys.path)
 from lib.models import build_network, build_body_model
 from configs.config import get_cfg
 
@@ -17,7 +16,7 @@ import os.path as osp
 from custom_utils import open_pkl, get_sequence_root
 
 from lib.utils.transforms import matrix_to_axis_angle, axis_angle_to_matrix
-from lib.eval.eval_utils import compute_pred_trans_hat, global_align_joints, first_align_joints, align_pcl, compute_jpe, batch_align_by_pelvis, batch_compute_similarity_transform_torch
+from lib.eval.eval_utils import compute_pred_trans_hat, global_align_joints, compute_rte, first_align_joints, align_pcl, compute_jpe, batch_align_by_pelvis, batch_compute_similarity_transform_torch
 
 
 import sys
@@ -26,19 +25,19 @@ from configs import constants as _C
 
 from scipy.spatial.transform import Rotation as R
 from lib.utils import transforms
-
+from configs.config import parse_args
 
 m2mm = 1e3
 pelvis_idxs = [1, 2]
 
-def run(gt_pth, wham_pth, slam_pth, output_pth, args, cfg):
+def run(gt_pth, wham_pth, output_pth, args, cfg):
 
     yup2ydown = transforms.axis_angle_to_matrix(torch.tensor([[np.pi, 0, 0]])).float()
 
     tt = lambda x: torch.from_numpy(x).float().to(cfg.DEVICE) 
 
-    smpl_batch_size = cfg.TRAIN.BATCH_SIZE * cfg.DATASET.SEQLEN
-    smpl = build_body_model(cfg.DEVICE, smpl_batch_size)
+    # smpl_batch_size = cfg.TRAIN.BATCH_SIZE * cfg.DATASET.SEQLEN
+    # smpl = build_body_model(cfg.DEVICE, smpl_batch_size)
     smpl = {k: SMPL(_C.BMODEL.FLDR, gender=k).to(cfg.DEVICE) for k in ['male', 'female', 'neutral']}
 
     #######################################################################################################
@@ -89,27 +88,13 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args, cfg):
     # Predicted global motion
     pred_glob = smpl['neutral'](body_pose=body_pose, global_orient=tt(pred_pose_world).unsqueeze(1), betas=tt(betas), transl=tt(pred_trans_world), pose2rot=False)
     pred_j3d_glob = pred_glob.joints[:, :24]
-
-
-    #######################################################################################################
-    # Prepare SLAM prediction data ########################################################################
-    #######################################################################################################
-    slam_output = open_pkl(slam_pth)
-    slam_output = slam_output[masks]
-    pred_cam_pose_orientation = R.from_quat(slam_output[:,3:]).as_matrix()
-    pred_cam_pose_trans = slam_output[:,:3]
-
-    gt_cam = np.linalg.inv(gt_cam)
     
     gt_trans_world = torch.from_numpy(gt_trans_world)
     pred_trans_world = torch.from_numpy(pred_trans_world)
 
     gt_pose_world = torch.from_numpy(gt_pose_world).unsqueeze(0).float()
     pred_pose_world = torch.from_numpy(pred_pose_world).unsqueeze(0).float()
-
-    gt_cam = torch.from_numpy(gt_cam).float()
-    pred_cam_pose_trans = torch.from_numpy(pred_cam_pose_trans).float()
-    
+   
     # <======= Evaluation on the local motion
     pred_j3d_cam, target_j3d_cam, pred_verts_cam, target_verts_cam = batch_align_by_pelvis(
         [pred_j3d_cam, target_j3d_cam, pred_verts_cam, target_verts_cam], pelvis_idxs
@@ -121,7 +106,6 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args, cfg):
     print("MPJPE: ", mpjpe.mean())
 
     # <======= Evaluation on the global motion
-
     chunk_length = 100
     w_mpjpe, wa_mpjpe = [], []
     for start in range(0, masks.sum(), chunk_length):
@@ -161,108 +145,42 @@ def run(gt_pth, wham_pth, slam_pth, output_pth, args, cfg):
     rte = torch.norm(gt_trans_world - trans_hat, 2, dim=-1)
     
     # Normalize it to the displacement
-    normalized_rte = (rte / disp).numpy() * 1e2
-    mean_normalized_rte = normalized_rte.mean()
-    print("Normalized RTE: ", mean_normalized_rte)
-
-
-    # <======= Evaluation on the camera pose
-    if args.gt_extrinsics:
-        pred_cam_pose = gt_cam
-    else:
-        aligned_cam_trans, cam_pose_rot = compute_pred_trans_hat(gt_cam[:,:3,3], pred_cam_pose_trans)
-        pred_cam_pose_orientation = cam_pose_rot @ pred_cam_pose_orientation
-        # create pred_extrinsic matrix with same shape as gt_cam
-        pred_cam_pose = np.zeros_like(gt_cam)
-        pred_cam_pose[:, :3, :3] = pred_cam_pose_orientation
-        pred_cam_pose[:, :3, 3] = aligned_cam_trans
-        pred_cam_pose[:, 3, 3] = 1
+    rte = compute_rte(gt_trans_world, pred_trans_world) * 1e2
+    mean_rte = rte.mean()
+    print("Normalized RTE: ", mean_rte)
 
 
     wham["trans_world_hat"] = trans_hat
     wham["pose_world_hat"] = root_poses_hat
-    wham["cam_pose_hat"] = pred_cam_pose
-    wham["rte"] = mean_normalized_rte
+    wham["rte"] = mean_rte
     wham["pa_mpjpe"] = pa_mpjpe.mean()
     wham["mpjpe"] = mpjpe.mean()
     wham["w_mpjpe"] = w_mpjpe.mean()
     wham["wa_mpjpe"] = wa_mpjpe.mean()
     joblib.dump(wham, output_pth)
+    print("Results saved to: ", output_pth)
 
     print("DONE")
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    
-    parser.add_argument("--subject", type=str, default=_C.subject_id, help="The subject ID, P0 - P9.")
+    cfg, cfg_file, args = parse_args(test=True)
 
-    parser.add_argument(
-        "--sequence",
-        type=str,
-        default=_C.sequence_id,
-        help="The sequence ID. This can be any unambiguous prefix of the sequence's name, i.e. for the "
-        "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
-    )
 
-    parser.add_argument("--gt_extrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=False, 
-                        help="Use ground truth camera pose (True/False)")
-
-    parser.add_argument("--gt_intrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=True, 
-                        help="Use GT intrinsics (True/False)")
-
-    parser.add_argument('--run_smplify', action='store_true', default=False,
-                        help='Run Temporal SMPLify for post processing')
-
-    parser.add_argument('--only_run_metrics', action='store_true', default=False)
-
-    parser.add_argument('-c', '--cfg', type=str, default='./configs/yamls/demo.yaml', help='cfg file path')
-    parser.add_argument(
-        "opts", default=None, nargs=argparse.REMAINDER,
-        help="Modify config options using the command-line")
-    
-    parser.add_argument("--baseline", action="store_true", default=False, help="Use baseline model")
-    
-    args = parser.parse_args()
-    
     sequence_root = get_sequence_root(args, gt=True)
     gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
 
     sequence_root = get_sequence_root(args, gt=False)
-    if args.gt_extrinsics:
-        if args.run_smplify:
-            wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_camera.pkl"))[0]
-            slam_path = glob(os.path.join(sequence_root, "slam_results.pth"))[0] # unused but argument is required
-        else:
-            wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_camera_wo_SMPLify.pkl"))[0]
-            slam_path = glob(os.path.join(sequence_root, "slam_results.pth"))[0]
-
-    elif args.gt_intrinsics and not args.baseline:
-        wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_intrinsics.pkl"))[0]
-        slam_path = glob(os.path.join(sequence_root, "slam_results_gt_intrinsics.pth"))[0]
-
-    elif args.gt_intrinsics and args.baseline:
-        wham_data_path = glob(os.path.join(sequence_root, "*_output_gt_intrinsics_baseline.pkl"))[0]
-        slam_path = glob(os.path.join(sequence_root, "slam_results_gt_intrinsics.pth"))[0]
+    if args.run_smplify:
+        wham_data_path = glob(os.path.join(sequence_root, "smplify.pkl"))[0]
+    elif args.run_baseline:
+        wham_data_path = glob(os.path.join(sequence_root, "baseline.pkl"))[0]
     else:
-        wham_data_path = glob(os.path.join(sequence_root, "*_output_DPVO.pkl"))[0]
-        slam_path = glob(os.path.join(sequence_root, "slam_results.pth"))[0]
-
-    # Output folder
-    if args.gt_extrinsics:
-        if args.run_smplify:
-            sequence = "wham_output_gt_camera_processed.pkl"
-        else:
-            sequence = "wham_output_gt_camera_wo_SMPLify_processed.pkl"
-    elif args.gt_intrinsics and not args.baseline:
-        sequence = "wham_output_gt_intrinsics_processed.pkl"
-    elif args.gt_intrinsics and args.baseline:
-        sequence = "wham_output_gt_intrinsics_baseline.pkl"
-    else:
-        sequence = "wham_output_DPVO_processed.pkl"
-    output_pth = osp.join(sequence_root, sequence)
+        wham_data_path = glob(os.path.join(sequence_root, "eval.pkl"))[0]
 
 
-    print(output_pth)
-    cfg = get_cfg(args, False)
-    run(gt_data_path, wham_data_path, slam_path,  output_pth, args, cfg)
+    output_pth = wham_data_path
+
+
+    print("Align: ", wham_data_path)
+    run(gt_data_path, wham_data_path, output_pth, args, cfg)

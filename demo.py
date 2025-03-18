@@ -51,120 +51,37 @@ def run(cfg,
         video,
         output_pth,
         network,
-        run_global=True,
-        save_pkl=False,
-        visualize=False,
-        gt_bb_kp=False):
+        save_pkl=False):
     
     cap = cv2.VideoCapture(video)
     assert cap.isOpened(), f'Faild to load video file {video}'
     fps = cap.get(cv2.CAP_PROP_FPS)
     length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    
-    # Whether or not estimating motion in global coordinates
-    run_global = run_global and _run_global
-    
-    print(args.gt_intrinsics, args.gt_extrinsics)
 
-    run_preproc = True
-    if not args.gt_intrinsics:
-        if osp.exists(osp.join(output_pth, 'slam_results.pth')):
-            run_preproc = False
-        calib = None
-    else:
-        calib = "output/emdb/"+ args.subject + "_" + args.sequence + "/gt_intrinsics.txt"
-        if osp.exists(osp.join(output_pth, 'slam_results_gt_intrinsics.pth')):
-            run_preproc = False
-
-    # Preprocess
-    with torch.no_grad():
-        if run_preproc:
-            
-            # detector = DetectionModel(cfg.DEVICE.lower())
-            # extractor = FeatureExtractor(cfg.DEVICE.lower(), cfg.FLIP_EVAL)
-            
-            if run_global: slam = SLAMModel(video, output_pth, width, height, calib)
-            else: slam = None
-            
-            bar = Bar('Preprocess: 2D detection and SLAM', fill='#', max=length)
-            while (cap.isOpened()):
-                flag, img = cap.read()
-                if not flag: break
-                
-                # 2D detection and tracking
-                # detector.track(img, fps, length)
-                
-                # SLAM
-                if slam is not None: 
-                    slam.track()
-                
-                bar.next()
-
-            # tracking_results = detector.process(fps)
-            
-            if slam is not None: 
-                slam_results = slam.process()
-            else:
-                slam_results = np.zeros((length, 7))
-                slam_results[:, 3] = 1.0    # Unit quaternion
-        
-            # Extract image features
-            # TODO: Merge this into the previous while loop with an online bbox smoothing.
-            # tracking_results = extractor.run(video, tracking_results)
-            logger.info('Complete Data preprocessing!')
-            
-            # Save the processed data
-            if not args.gt_intrinsics:
-                # joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results.pth'))
-                joblib.dump(slam_results, osp.join(output_pth, 'slam_results.pth'))
-                logger.info(f'Save processed data at {output_pth}')
-            else:
-                # joblib.dump(tracking_results, osp.join(output_pth, 'tracking_results_gt_intrinsics.pth'))
-                joblib.dump(slam_results, osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
-                logger.info(f'Save processed data at {output_pth}')
-        
-        # If the processed data already exists, load the processed data
-        else:
-            if not args.gt_intrinsics:
-                # tracking_results = joblib.load(osp.join(output_pth, 'tracking_results.pth'))
-                slam_results = joblib.load(osp.join(output_pth, 'slam_results.pth'))
-                logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
-            else:
-                # tracking_results = joblib.load(osp.join(output_pth, 'tracking_results_gt_intrinsics.pth'))
-                slam_results = joblib.load(osp.join(output_pth, 'slam_results_gt_intrinsics.pth'))
-                logger.info(f'Already processed data exists at {output_pth} ! Load the data .')
+    calib = "output/emdb/"+ args.subject + "_" + args.sequence + "/gt_intrinsics.txt"
 
     eval_loader = setup_eval_dataloader(cfg, 'emdb', args.eval_split, cfg.MODEL.BACKBONE)
     emdb_sequence_index = find_substring(args.subject+"_"+args.sequence, eval_loader.dataset.labels['vid'])
     if emdb_sequence_index is None:
         logger.error(f"Sequence {args.subject}_{args.sequence} not found in the emdb2 dataset. Not usefull for global trajectory.")
         return
-    # slam_results = joblib.load(osp.join(output_pth, 'slam_results.pth'))
-    cam_angvel = convert_dpvo_to_cam_angvel(slam_results, fps).to(cfg.DEVICE).unsqueeze(0)
-    
-    # remove elments from cam_angvel that are not in the eval_loader.dataset.labels['frame_id'][emdb_sequence_index]
-    filter_ids = torch.unique(eval_loader.dataset.labels['frame_id'][emdb_sequence_index])
-    cam_angvel = cam_angvel[:,filter_ids, :]
 
     print("Loading data from eval loader")
-
 
     length_update = eval_loader.dataset.labels['frame_id'][emdb_sequence_index].shape[0] - 1
     print("Found # frames in dataset: ", length)
     print("Found # frames in eval loader: ", length_update)
+    length = length_update
 
-    if args.gt_intrinsics:
-        calib_data = np.loadtxt(calib, delimiter=" ")
-        fx, fy, cx, cy = calib_data[:4]
-        gt_intrinsics = np.eye(3)
-        gt_intrinsics[0,0] = fx
-        gt_intrinsics[0,2] = cx
-        gt_intrinsics[1,1] = fy
-        gt_intrinsics[1,2] = cy
-        gt_intrinsics = torch.tensor(gt_intrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-        # print("GT intrinsics")
-        # print(gt_intrinsics)
+    calib_data = np.loadtxt(calib, delimiter=" ")
+    fx, fy, cx, cy = calib_data[:4]
+    gt_intrinsics = np.eye(3)
+    gt_intrinsics[0,0] = fx
+    gt_intrinsics[0,2] = cx
+    gt_intrinsics[1,1] = fy
+    gt_intrinsics[1,2] = cy
+    gt_intrinsics = torch.tensor(gt_intrinsics).float().to(cfg.DEVICE).unsqueeze(0)
 
     sequence_root = get_sequence_root(args)
     gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
@@ -183,7 +100,7 @@ def run(cfg,
 
         batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=False)
         x, inits, features, kwargs, gt = prepare_batch(batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
-
+        cam_angvel = kwargs['cam_angvel']
 
         cam2yup = batch['R'][0][:1].to(cfg.DEVICE)
         cam2ydown = cam2yup @ yup2ydown
@@ -195,6 +112,9 @@ def run(cfg,
         # Forward pass with flipped input
         flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=True)
         f_x, f_inits, f_features, f_kwargs, f_gt = prepare_batch(flipped_batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
+
+        # kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+        # f_kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
 
         flipped_pred = network(f_x, f_inits, f_features, **f_kwargs)
         pred = network(x, inits, features, **kwargs)
@@ -212,39 +132,27 @@ def run(cfg,
         network.pred_shape = avg_shape.view_as(network.pred_shape)
         network.pred_contact = avg_contact.view_as(network.pred_contact)
         output = network.forward_smpl(**kwargs)
-        # cam_angvel = kwargs['cam_angvel']
         pred = network.refine_trajectory(output, return_y_up=True, **kwargs)
 
-    # if True:
-    if args.run_smplify:
-        # convert gt extrinsics to torch tensor
+    if args.run_baseline:
         kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
-        # smplify = CustomSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
-        # pred = smplify.fit(pred, input_keypoints, **kwargs)
         pred = progressive_global_translation_optimization(
             pred, input_keypoints, kwargs['bbox'],
             kwargs['gt_extrinsics'], kwargs['cam_intrinsics'],
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
 
-        # with torch.no_grad():
-        #     network.pred_pose = pred['pose']
-        #     network.pred_shape = pred['betas']
-        #     network.pred_cam = pred['cam']
-        #     output = network.forward_smpl(**kwargs)
-        #     pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
-
-        # smplify = TemporalSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
-        # input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index].cpu().numpy()
-        # input_keypoints = input_keypoints[1:,:,:]
-        # pred = smplify.fit(pred, input_keypoints, **kwargs)
+    if args.run_smplify:
+        smplify = TemporalSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
+        input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].cpu().numpy()
+        pred = smplify.fit(pred, input_keypoints, **kwargs)
         
-        # with torch.no_grad():
-        #     network.pred_pose = pred['pose']
-        #     network.pred_shape = pred['betas']
-        #     network.pred_cam = pred['cam']
-        #     output = network.forward_smpl(**kwargs)
-        #     pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+        with torch.no_grad():
+            network.pred_pose = pred['pose']
+            network.pred_shape = pred['betas']
+            network.pred_cam = pred['cam']
+            output = network.forward_smpl(**kwargs)
+            pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
 
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
@@ -262,85 +170,25 @@ def run(cfg,
     results['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
     
     if save_pkl:
-        if args.gt_extrinsics and args.gt_intrinsics:
-            if args.run_smplify:
-                joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera_baseline.pkl"))
-                print("Save results to ", osp.join(output_pth, "wham_output_gt_camera_baseline.pkl"))
-            else:
-                joblib.dump(results, osp.join(output_pth, "wham_output_gt_camera_wo_SMPLify.pkl"))
-                print("Save results to ", osp.join(output_pth, "wham_output_gt_camera_wo_SMPLify.pkl"))
-        elif args.gt_intrinsics:
-            joblib.dump(results, osp.join(output_pth, "wham_output_gt_intrinsics_baseline.pkl"))
-            print("Save results to ", osp.join(output_pth, "wham_output_gt_intrinsics_baseline.pkl"))
+        if args.run_smplify:
+            pth = osp.join(output_pth, "smplify.pkl")
+            joblib.dump(results, pth)
+            print("Save results to ", pth)
+        elif args.run_baseline:
+            pth = osp.join(output_pth, "baseline.pkl")
+            joblib.dump(results, pth)
+            print("Save results to ", pth)
         else:
-            joblib.dump(results, osp.join(output_pth, "wham_output_DPVO.pkl"))
-            print("Save results to ", osp.join(output_pth, "wham_output_DPVO.pkl"))
-     
-    # Visualize
-    if visualize:
-        from lib.vis.run_vis import run_vis_on_demo
-        with torch.no_grad():
-            if args.gt_intrinsics:
-                focal_len = gt_intrinsics[0, 0, 0]
-            else:
-                focal_len = None
-            run_vis_on_demo(cfg, video, results, output_pth, network.smpl, vis_global=run_global, focal_length=focal_len)
-        
+            pth = osp.join(output_pth, "eval.pkl")
+            joblib.dump(results, pth)
+            print("Save results to ", pth)
 
 if __name__ == '__main__':
-    subject_id = _C.subject_id
-    sequence_id = _C.sequence_id
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("--gt_intrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=True, 
-                        help="Use GT intrinsics (True/False)")
-
-    parser.add_argument("--gt_extrinsics", type=lambda x: x.lower() in ['true', '1', 'yes'], default=True, 
-                        help="Use ground truth camera pose (True/False)")
-
-    parser.add_argument('--output_pth', type=str, default=_C.PATHS.WHAM_OUTPUT, 
-                        help='output folder to write results')
-
-    parser.add_argument('--estimate_local_only', action='store_true',
-                        help='Only estimate motion in camera coordinate if True')
-    
-    parser.add_argument('--visualize', action='store_true',
-                        help='Visualize the output mesh if True')
-    
-    parser.add_argument('--save_pkl', action='store_true', default=True,
-                        help='Save output as pkl file')
-    
-    parser.add_argument('--run_smplify', action='store_true', default=False,
-                        help='Run Temporal SMPLify for post processing')
-    
-    parser.add_argument("--subject", type=str, default=subject_id, help="The subject ID, P0 - P9.")
-
-    parser.add_argument(
-        "--sequence",
-        type=str,
-        default=sequence_id,
-        help="The sequence ID. This can be any unambiguous prefix of the sequence's name, i.e. for the "
-        "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
-    )
-
-    parser.add_argument(
-        "--eval-split", type=str, default='2', help="Evaluation data split")
-
-    args = parser.parse_args()
-
-    # cfg = get_cfg_defaults()
-    # cfg.merge_from_file('configs/yamls/demo.yaml')
-
     cfg, cfg_file, args = parse_args(test=True)
-    
-    logger.info(f'GPU name -> {torch.cuda.get_device_name()}')
-    logger.info(f'GPU feat -> {torch.cuda.get_device_properties("cuda")}')    
     
     # ========= Load WHAM ========= #
     smpl_batch_size = cfg.TRAIN.BATCH_SIZE * cfg.DATASET.SEQLEN
     smpl = build_body_model(cfg.DEVICE, smpl_batch_size)
-    # smpl = SMPL(_C.BMODEL.FLDR).to(cfg.DEVICE)
     network = build_network(cfg, smpl)
     network.eval()
     
@@ -357,8 +205,6 @@ if __name__ == '__main__':
         video_path, 
         output_pth, 
         network,
-        run_global=not args.estimate_local_only, 
-        save_pkl=args.save_pkl,
-        visualize=args.visualize)
+        save_pkl=args.save_pkl)
         
     logger.info('Done !')
