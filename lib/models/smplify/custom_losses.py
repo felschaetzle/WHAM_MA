@@ -88,10 +88,6 @@ class CustomSMPLifyLoss(torch.nn.Module):
         def closure():
             optimizer.zero_grad()
 
-            # output = smpl.forward_align(params[0], params[1], trans_opt=params[3], global_orient_opt=params[4])
-
-            # joints3d = output.joints.unsqueeze(0)
-
             # get rotation and translation from extrinsics matrix
             rotation = self.gt_extrinsics[:, :, :3, :3]
             translation = self.gt_extrinsics[:, :, :3, 3]
@@ -102,20 +98,6 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 translation=translation,
             )
 
-            # len = params[5].shape[1]
-            # # make string out of len with leading zeros
-            # len_str = str(len-1).zfill(5)
-            # frame = cv2.imread("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/images/00000.jpg")
-            
-            # pred_keypoints = full_joints2d[..., :17, :]
-             
-            # # draw keypoints
-            # for i in range(pred_keypoints.shape[2]):
-            #     x, y = pred_keypoints[0, 0, i].int().tolist()
-            #     cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
-            
-            # cv2.imshow("frame", frame)
-            # cv2.waitKey(0)
             loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox)
             loss = sum(loss_dict.values())
             loss.backward()
@@ -123,12 +105,6 @@ class CustomSMPLifyLoss(torch.nn.Module):
         
         return closure
     
-
-# class CustomSMPLParamLoss(torch.nn.Module):
-#     def __init__(self):
-        
-#         super().__init__()
-        
 def create_SMPL_param_closure(optimizer, smpl, params):
     
     def closure():

@@ -39,19 +39,11 @@ from smplx import SMPL
 from configs.config import get_cfg_defaults
 from configs.config import parse_args
 
-try: 
-    from lib.models.preproc.slam import SLAMModel
-    _run_global = True
-except: 
-    logger.info('DPVO is not properly installed. Only estimate in local coordinates !')
-    _run_global = False
-
-
 def run(cfg,
         video,
         output_pth,
         network,
-        save_pkl=False):
+        save_pkl):
     
     cap = cv2.VideoCapture(video)
     assert cap.isOpened(), f'Faild to load video file {video}'
@@ -113,8 +105,8 @@ def run(cfg,
         flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=True)
         f_x, f_inits, f_features, f_kwargs, f_gt = prepare_batch(flipped_batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
 
-        # kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
-        # f_kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+        kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+        f_kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
 
         flipped_pred = network(f_x, f_inits, f_features, **f_kwargs)
         pred = network(x, inits, features, **kwargs)
@@ -135,6 +127,13 @@ def run(cfg,
         pred = network.refine_trajectory(output, return_y_up=True, **kwargs)
 
     if args.run_baseline:
+        if args.use_gt_betas:
+            gt_betas = gt_data["smpl"]["betas"]
+            gt_betas = gt_betas.reshape(1, 1, 10)
+            gt_betas = np.repeat(gt_betas, repeats=length, axis=1)
+            gt_betas = torch.tensor(gt_betas).float().to(cfg.DEVICE)
+            pred['betas'] = gt_betas
+
         kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
         pred = progressive_global_translation_optimization(
@@ -175,9 +174,15 @@ def run(cfg,
             joblib.dump(results, pth)
             print("Save results to ", pth)
         elif args.run_baseline:
-            pth = osp.join(output_pth, "baseline.pkl")
-            joblib.dump(results, pth)
-            print("Save results to ", pth)
+            if args.use_gt_betas:
+                pth = osp.join(output_pth, "baseline_gt_betas.pkl")
+                joblib.dump(results, pth)
+                print("Save results to ", pth)
+            else:
+                pth = osp.join(output_pth, "baseline.pkl")
+                joblib.dump(results, pth)
+                print("Save results to ", pth)
+
         else:
             pth = osp.join(output_pth, "eval.pkl")
             joblib.dump(results, pth)
@@ -205,6 +210,6 @@ if __name__ == '__main__':
         video_path, 
         output_pth, 
         network,
-        save_pkl=args.save_pkl)
+        args.save_pkl)
         
     logger.info('Done !')
