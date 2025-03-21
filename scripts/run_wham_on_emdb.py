@@ -72,13 +72,12 @@ def main():
 
 			print(subject_id, sequence_id)
 
-			execute_demo(subject_id, sequence_id)
+			# execute_demo(subject_id, sequence_id)
+			# execute_demo(subject_id, sequence_id, ["--run_smplify", "--naive_intrinsics"])
 			# execute_demo(subject_id, sequence_id, ["--run_smplify"])
 			# execute_demo(subject_id, sequence_id, ["--run_baseline"])
+			execute_demo(subject_id, sequence_id, ["--run_baseline", "--use_gt_betas"])
 
-			execute_align(subject_id, sequence_id)
-			# execute_align(subject_id, sequence_id, ["--run_smplify"])
-			# execute_align(subject_id, sequence_id, ["--run_baseline"])
 		else:
 			print("FAIL!")
 

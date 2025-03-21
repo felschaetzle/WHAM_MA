@@ -158,7 +158,7 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
     """
 
     # Create an instance of CustomSMPLify
-    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=10,
+    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=200,
                                    img_w=res[0], img_h=res[1], device=device)
     
     pose = init_pred['pose']
@@ -174,7 +174,8 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
     # Copy the initial predictions to update them progressively.
     current_pred = {k: v.clone() for k, v in init_pred.items()}
     current_pred['joints3d_world'] = joints3d_world.clone()
-    optimized_results = {}
+    
+    window_size = length - 1
 
     for window in range(window_size, length, window_size):
         if window + window_size >= length:

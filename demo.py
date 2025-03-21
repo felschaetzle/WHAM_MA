@@ -39,7 +39,10 @@ from smplx import SMPL
 from configs.config import get_cfg_defaults
 from configs.config import parse_args
 
+from scripts.align_emdb import align_and_compute_metrics
+
 def run(cfg,
+        args,
         video,
         output_pth,
         network,
@@ -105,8 +108,10 @@ def run(cfg,
         flipped_batch = eval_loader.dataset.load_data(emdb_sequence_index, flip=True)
         f_x, f_inits, f_features, f_kwargs, f_gt = prepare_batch(flipped_batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
 
-        kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
-        f_kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+
+        if not args.naive_intrinsics:
+            kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
+            f_kwargs['cam_intrinsics'] = gt_intrinsics.unsqueeze(0)
 
         flipped_pred = network(f_x, f_inits, f_features, **f_kwargs)
         pred = network(x, inits, features, **kwargs)
@@ -170,23 +175,29 @@ def run(cfg,
     
     if save_pkl:
         if args.run_smplify:
-            pth = osp.join(output_pth, "smplify.pkl")
-            joblib.dump(results, pth)
-            print("Save results to ", pth)
+            if args.naive_intrinsics:
+                pth = osp.join(output_pth, "smplify_naive_intrinsics.pkl")
+                joblib.dump(results, pth)
+                print("Save results to ", pth)
+            else:
+                pth = osp.join(output_pth, "smplify.pkl")
+                joblib.dump(results, pth)
+                print("Save results to ", pth)
         elif args.run_baseline:
             if args.use_gt_betas:
-                pth = osp.join(output_pth, "baseline_gt_betas.pkl")
+                pth = osp.join(output_pth, "baseline_gt_betas_at_once.pkl")
                 joblib.dump(results, pth)
                 print("Save results to ", pth)
             else:
                 pth = osp.join(output_pth, "baseline.pkl")
                 joblib.dump(results, pth)
                 print("Save results to ", pth)
-
         else:
             pth = osp.join(output_pth, "eval.pkl")
             joblib.dump(results, pth)
             print("Save results to ", pth)
+
+    align_and_compute_metrics(gt_data_path, pth, args, cfg)
 
 if __name__ == '__main__':
     cfg, cfg_file, args = parse_args(test=True)
@@ -206,7 +217,8 @@ if __name__ == '__main__':
     output_pth = osp.join(args.output_pth, sequence)
     os.makedirs(output_pth, exist_ok=True)
     
-    run(cfg, 
+    run(cfg,
+        args,
         video_path, 
         output_pth, 
         network,
