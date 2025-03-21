@@ -4,7 +4,7 @@ from tqdm import tqdm
 import numpy as np
 
 from lib.models import build_body_model
-from .custom_losses import CustomSMPLifyLoss, create_SMPL_param_closure
+from .custom_losses import CustomSMPLifyLoss
 from lib.models.smpl import convert_pare_to_full_img_cam
 from lib.utils.transforms import matrix_to_axis_angle, matrix_to_rotation_6d, rotation_6d_to_matrix, axis_angle_to_matrix
 from lib.eval.eval_utils import first_align_joints_return_R_t
@@ -20,8 +20,7 @@ class CustomSMPLify():
                  lr=1e-2,
                  num_iters=5,
                  num_steps=10,
-                 img_w=None,
-                 img_h=None,
+                 res=None,
                  device=None,
                  ):
         
@@ -29,11 +28,10 @@ class CustomSMPLify():
         self.lr = lr
         self.num_iters = num_iters
         self.num_steps = num_steps
-        self.img_w = img_w
-        self.img_h = img_h
         self.device = device
+        self.res = res
 
-    def fit(self, init_pred, keypoints, bbox, gt_extrinsics, cam_intrinsics, joints3d_world):
+    def fit(self, init_pred, keypoints, bbox, gt_extrinsics, cam_intrinsics):
         
         def to_params(param):
             return param.requires_grad_(True)
@@ -46,8 +44,8 @@ class CustomSMPLify():
         poses_root_world = init_pred['poses_root_world'].squeeze(0)
         
         # Stage 1. Optimize translation
-        params = [to_params(pose), to_params(betas), to_params(cam), to_params(transl_world), to_params(poses_root_world), to_params(joints3d_world)]
-        optim_params = [params[5]]
+        params = [to_params(pose), to_params(betas), to_params(cam), to_params(transl_world), to_params(poses_root_world)]
+        optim_params = [params[3], params[4]]
         
         optimizer = torch.optim.LBFGS(
             optim_params, 
@@ -55,7 +53,7 @@ class CustomSMPLify():
             max_iter=self.num_iters, 
             line_search_fn='strong_wolfe')
         
-        loss_fn = CustomSMPLifyLoss(cam_intrinsics, init_pose=pose, device=self.device, gt_extrinsics=gt_extrinsics)
+        loss_fn = CustomSMPLifyLoss(self.res, cam_intrinsics, init_pose=pose, device=self.device, gt_extrinsics=gt_extrinsics)
         
         closure = loss_fn.create_closure(optimizer,
                     self.smpl, 
@@ -73,63 +71,11 @@ class CustomSMPLify():
 
         print(f"Final joint opt loss: {loss.item():.1f}")
 
-        init_pred['pose'] = params[0].detach()
-        init_pred['betas'] = params[1].detach()
-        init_pred['cam'] = params[2].detach()
         init_pred['trans_world'] = params[3].detach()
         init_pred['poses_root_world'] = params[4].detach()
-        init_pred['joints3d_world'] = params[5].detach()
         
         return init_pred
     
-    def fit_SMPL_params(self, init_pred, transl_world_aligned, poses_root_world_aligned):
-        
-        def to_params(param):
-            return param.requires_grad_(True)
-        
-        pose = init_pred['pose']
-        betas = init_pred['betas']
-        cam = init_pred['cam']
-
-        transl_world = transl_world_aligned
-        poses_root_world = poses_root_world_aligned
-        joints3d_world = init_pred['joints3d_world']
-
-        lr = self.lr
-        
-        # Stage 1. Optimize translation
-        params = [to_params(pose), to_params(betas), to_params(cam), to_params(transl_world), to_params(poses_root_world), to_params(joints3d_world)]
-
-        # SMPL param recovery
-        optim_params = [params[3], params[4]]
-        optimizer_smpl_params = torch.optim.LBFGS(
-            optim_params, 
-            lr=lr, 
-            max_iter=self.num_iters, 
-            line_search_fn='strong_wolfe')
-                
-        closure_smpl_params = create_SMPL_param_closure(optimizer_smpl_params,
-                    self.smpl, 
-                    params
-                    )
-        
-        for j in (j_bar := tqdm(range(5), leave=False)):
-            optimizer_smpl_params.zero_grad()
-            loss = optimizer_smpl_params.step(closure_smpl_params)
-            msg = f'Loss: {loss.item():.1f}'
-            j_bar.set_postfix_str(msg)
-
-        print(f"Final SMPL param opt loss: {loss.item():.1f}")
-
-        init_pred['pose'] = params[0].detach()
-        init_pred['betas'] = params[1].detach()
-        init_pred['cam'] = params[2].detach()
-        init_pred['trans_world'] = params[3].detach()
-        init_pred['poses_root_world'] = params[4].detach()
-        init_pred['joints3d_world'] = params[5].detach()
-        
-        return init_pred
-
 # =============================================================================
 # Progressive Optimization Function
 # =============================================================================
@@ -158,8 +104,7 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
     """
 
     # Create an instance of CustomSMPLify
-    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=200,
-                                   img_w=res[0], img_h=res[1], device=device)
+    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=200, res=res, device=device)
     
     pose = init_pred['pose']
     betas = init_pred['betas']
@@ -171,9 +116,11 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
     # get transl and root_pose in gt world frame
     joints3d_world, transl_world_aligned, poses_root_world_aligned = W_MPJPE_align(cam, bbox, res, cam_intrinsics, smpl, device, pose, betas, transl_wham_world, poses_root_wham_world, gt_extrinsics, window_size)
 
+    init_pred['trans_world'] = transl_world_aligned
+    init_pred['poses_root_world'] = poses_root_world_aligned
+
     # Copy the initial predictions to update them progressively.
     current_pred = {k: v.clone() for k, v in init_pred.items()}
-    current_pred['joints3d_world'] = joints3d_world.clone()
     
     window_size = length - 1
 
@@ -193,7 +140,6 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
         keypoints_window = keypoints[:window]
         bbox_window = bbox[:,:window,:]
         gt_extrinsics_window = gt_extrinsics[:,:window,:,:]
-        joints3d_world_window = current_pred['joints3d_world'][:window]
         
         # Run optimization on the current window.
         optimized_pred_window = custom_smplify.fit(
@@ -201,25 +147,16 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
             keypoints_window,
             bbox_window,
             gt_extrinsics=gt_extrinsics_window,
-            cam_intrinsics=cam_intrinsics,
-            joints3d_world=joints3d_world_window
+            cam_intrinsics=cam_intrinsics
         )
 
         # Update the current predictions with the optimized values.
-        current_pred['cam'][:,:window,:] = optimized_pred_window['cam']
-        current_pred['pose'][:,:window,:] = optimized_pred_window['pose']
-        current_pred['betas'][:,:window,:] = optimized_pred_window['betas']
-        
         current_pred['trans_world'][:window,:] = optimized_pred_window['trans_world']
         current_pred['poses_root_world'][:window,:] = optimized_pred_window['poses_root_world']
-        
-        current_pred['joints3d_world'][:window] = optimized_pred_window['joints3d_world']
-
-    opt_SMPL_params = custom_smplify.fit_SMPL_params(current_pred, transl_world_aligned, poses_root_world_aligned)
 
     print('Optimization complete.')
 
-    return opt_SMPL_params
+    return current_pred
 
 def W_MPJPE_align(cam, bbox, res, cam_intrinsics, smpl, device, pose, betas, transl_wham_world, poses_root_wham_world, gt_extrinsics, window_size):
     n = cam.shape[1]  # number of frames

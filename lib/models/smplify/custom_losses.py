@@ -25,7 +25,7 @@ def compute_jitter(x):
 
 class CustomSMPLifyLoss(torch.nn.Module):
     def __init__(self, 
-                #  res,
+                 res,
                  cam_intrinsics,
                  init_pose, 
                  device,
@@ -36,21 +36,21 @@ class CustomSMPLifyLoss(torch.nn.Module):
         super().__init__()
         
         self.device = device
-        # self.res = res
+        self.res = res
         self.cam_intrinsics = cam_intrinsics
         self.init_pose = init_pose
         self.gt_extrinsics = gt_extrinsics
         
-    def forward(self, output, params, input_keypoints, bbox, 
+    def forward(self, joints_2d, params, input_keypoints, bbox, joints_3d,
                 reprojection_weight=100., regularize_weight=60.0, 
                 consistency_weight=10.0, sprior_weight=0.04, 
                 smooth_weight=20.0, sigma=100):
         
-        pose, shape, cam, _ , _, _ = params
+        pose, shape, cam, _ , _ = params
         scale = bbox[..., 2:].unsqueeze(-1) * 200.
 
         # Loss 1. Data term
-        pred_keypoints = output[..., :17, :]
+        pred_keypoints = joints_2d[..., :17, :]
         joints_conf = input_keypoints[..., -1:]
         reprojection_error = gmof(pred_keypoints - input_keypoints[..., :-1], sigma)
         reprojection_error = ((reprojection_error * joints_conf) / scale).mean()
@@ -66,8 +66,9 @@ class CustomSMPLifyLoss(torch.nn.Module):
         # Loss 4. Smooth loss
         pose_diff = compute_jitter(pose).mean()
         cam_diff = compute_jitter(cam).mean() # 0.0
-        # trans_diff = compute_jitter(trans).mean() # translation in global coords
-        smooth_error = pose_diff + cam_diff
+        trans_diff = compute_jitter(params[3]).mean() # translation in global coords
+        # keypoints_diff = compute_jitter(joint3d).mean()
+        smooth_error = pose_diff + cam_diff + trans_diff
         
         # Sum up losses
         loss = {
@@ -89,36 +90,22 @@ class CustomSMPLifyLoss(torch.nn.Module):
         def closure():
             optimizer.zero_grad()
 
+            output = smpl.forward_align(params[0], params[1], cam_intrinsics=self.cam_intrinsics, bbox=bbox, res=self.res, trans_opt=params[3], global_orient_opt=params[4])
+            joints3d = output.joints.reshape(*params[2].shape[:2], -1, 3)
+
             # get rotation and translation from extrinsics matrix
             rotation = self.gt_extrinsics[:, :, :3, :3]
             translation = self.gt_extrinsics[:, :, :3, 3]
             full_joints2d = full_perspective_projection(
-                params[5],
+                joints3d,
                 cam_intrinsics=self.cam_intrinsics,
                 rotation=rotation,
                 translation=translation,
             )
 
-            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox)
+            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, joints3d)
             loss = sum(loss_dict.values())
             loss.backward()
             return loss
         
         return closure
-    
-def create_SMPL_param_closure(optimizer, smpl, params):
-    
-    def closure():
-        optimizer.zero_grad()
-
-        output = smpl.forward_align(params[0], params[1], trans_opt=params[3], global_orient_opt=params[4])
-        pred_joints3d = output.joints[:, :17, :]
-
-        # Calculate 3D distance between predicted and GT joints
-        joints3d = params[5][:, :17, :]
-        loss = torch.linalg.norm(pred_joints3d - joints3d, dim=-1).mean()  # Ensure loss is a scalar
-
-        loss.backward()
-        return loss
-    
-    return closure
