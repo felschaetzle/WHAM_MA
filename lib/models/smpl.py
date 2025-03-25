@@ -88,51 +88,35 @@ class SMPL(_SMPL):
                 is_matrix=False,
                 **kwargs):
         
-        if not is_matrix:
-            rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(*pred_rot6d.shape[:2], -1, 6)
-            ).reshape(-1, 24, 3, 3)
-        else:
-            rotmat = pred_rot6d
+        rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(*pred_rot6d.shape[:2], -1, 6)
+        ).reshape(-1, 24, 3, 3)
 
-        if global_orient_opt is None and trans_opt is None:
-            output = self.get_output(body_pose=rotmat[:, 1:],
+        output = self.get_output(body_pose=rotmat[:, 1:],
                                  global_orient=rotmat[:, :1],
                                  betas=betas.view(-1, 10),
                                  pose2rot=False,
                                  return_full_pose=return_full_pose)
-        elif global_orient_opt is not None and trans_opt is not None:
-            kwargs['transl'] = trans_opt
-            output = self.get_output(body_pose=rotmat[:, 1:],
-                                 global_orient=global_orient_opt,
-                                 betas=betas.view(-1, 10),
-                                 pose2rot=False,
-                                 return_full_pose=return_full_pose,
-                                 **kwargs)
+
+        # if global_orient_opt is None and trans_opt is None:
+        #     output = self.get_output(body_pose=rotmat[:, 1:],
+        #                          global_orient=rotmat[:, :1],
+        #                          betas=betas.view(-1, 10),
+        #                          pose2rot=False,
+        #                          return_full_pose=return_full_pose)
+        # elif global_orient_opt is not None and trans_opt is not None:
+        #     kwargs['transl'] = trans_opt
+        #     output = self.get_output(body_pose=rotmat[:, 1:],
+        #                          global_orient=global_orient_opt,
+        #                          betas=betas.view(-1, 10),
+        #                          pose2rot=False,
+        #                          return_full_pose=return_full_pose,
+        #                          **kwargs)
+                        
+        #     return output
+
 
         if cam is not None:
-
             joints3d = output.joints.reshape(*cam.shape[:2], -1, 3)
-
-            if use_gt_intrinsics:
-                # Convert cam to SMPL translation in cam frame
-                full_cam = convert_pare_to_full_img_cam(
-                    cam, 
-                    bbox[:, :, 2] * 200., 
-                    bbox[:, :, :2], 
-                    res[:, 0].unsqueeze(-1), 
-                    res[:, 1].unsqueeze(-1), 
-                    focal_length=cam_intrinsics[:, :, 0, 0]
-                )
-                
-                full_joints2d = full_perspective_projection(
-                    joints3d,
-                    translation=full_cam,
-                    cam_intrinsics=cam_intrinsics,
-                )
-                output.full_joints2d = full_joints2d
-                output.full_cam = full_cam.reshape(-1, 3)
-                
-                return output
             
             # Weak perspective projection (for InstaVariety)
             weak_cam = convert_weak_perspective_to_perspective(cam)

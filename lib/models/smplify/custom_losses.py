@@ -65,16 +65,15 @@ class CustomSMPLifyLoss(torch.nn.Module):
         
         # Loss 4. Smooth loss
         pose_diff = compute_jitter(pose).mean()
-        cam_diff = compute_jitter(cam).mean() # 0.0
+        # cam_diff = compute_jitter(cam).mean() # 0.0
         trans_diff = compute_jitter(params[3]).mean() # translation in global coords
-        # keypoints_diff = compute_jitter(joint3d).mean()
-        smooth_error = pose_diff + cam_diff + trans_diff
+        smooth_error = pose_diff + trans_diff/100
         
         # Sum up losses
         loss = {
             'reprojection': reprojection_weight * reprojection_error,
             'regularize': regularize_weight * regularize_error,
-            'shape': shape_error,
+            # 'shape': shape_error,
             'smooth': smooth_weight * smooth_error
         }
         

@@ -52,7 +52,7 @@ def execute_align(sub_id, seq_id, args=None):
 def main():
 	subdirectories = glob(f"{DATASET_DIR}/*/*/")
 	subdirectories = sorted(subdirectories)
-	emdb2 = joblib.load('dataset/parsed_data/emdb_2_vit.pth')
+	emdb2 = joblib.load('dataset/parsed_data/emdb_1_vit.pth')
 	# print(sorted(subdirectories))
 	for path in subdirectories:
 		relative_path = os.path.relpath(path, DATASET_DIR)  # Get relative path
@@ -72,11 +72,11 @@ def main():
 
 			print(subject_id, sequence_id)
 
-			# execute_demo(subject_id, sequence_id)
+			execute_demo(subject_id, sequence_id)
 			# execute_demo(subject_id, sequence_id, ["--run_smplify", "--naive_intrinsics"])
 			# execute_demo(subject_id, sequence_id, ["--run_smplify"])
 			# execute_demo(subject_id, sequence_id, ["--run_baseline"])
-			execute_demo(subject_id, sequence_id, ["--run_baseline", "--use_gt_betas"])
+			# execute_demo(subject_id, sequence_id, ["--run_baseline", "--use_gt_betas"])
 
 		else:
 			print("FAIL!")

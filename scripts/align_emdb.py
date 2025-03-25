@@ -13,7 +13,8 @@ from glob import glob
 import os
 import os.path as osp
 
-from custom_utils import open_pkl, get_sequence_root
+
+from scripts.custom_utils import open_pkl
 
 from lib.utils.transforms import matrix_to_axis_angle, axis_angle_to_matrix
 from lib.eval.eval_utils import compute_pred_trans_hat, global_align_joints, compute_rte, first_align_joints, align_pcl, compute_jpe, batch_align_by_pelvis, batch_compute_similarity_transform_torch
@@ -30,7 +31,7 @@ from configs.config import parse_args
 m2mm = 1e3
 pelvis_idxs = [1, 2]
 
-def run(gt_pth, wham_pth, output_pth, args, cfg):
+def align_and_compute_metrics(gt_pth, wham_pth, args, cfg):
 
     yup2ydown = transforms.axis_angle_to_matrix(torch.tensor([[np.pi, 0, 0]])).float()
 
@@ -102,8 +103,8 @@ def run(gt_pth, wham_pth, output_pth, args, cfg):
     S1_hat = batch_compute_similarity_transform_torch(pred_j3d_cam, target_j3d_cam)
     pa_mpjpe = torch.sqrt(((S1_hat - target_j3d_cam) ** 2).sum(dim=-1)).mean(dim=-1).detach().cpu().numpy() * m2mm
     mpjpe = torch.sqrt(((pred_j3d_cam - target_j3d_cam) ** 2).sum(dim=-1)).mean(dim=-1).detach().cpu().numpy() * m2mm
-    print("PA-MPJPE: ", pa_mpjpe.mean())
-    print("MPJPE: ", mpjpe.mean())
+    # print("PA-MPJPE: ", pa_mpjpe.mean())
+    # print("MPJPE: ", mpjpe.mean())
 
     # <======= Evaluation on the global motion
     chunk_length = 100
@@ -157,30 +158,32 @@ def run(gt_pth, wham_pth, output_pth, args, cfg):
     wham["mpjpe"] = mpjpe.mean()
     wham["w_mpjpe"] = w_mpjpe.mean()
     wham["wa_mpjpe"] = wa_mpjpe.mean()
-    joblib.dump(wham, output_pth)
-    print("Results saved to: ", output_pth)
+    joblib.dump(wham, wham_pth)
+    print("Results saved to: ", wham_pth)
 
     print("DONE")
 
 
-if __name__ == '__main__':
-    cfg, cfg_file, args = parse_args(test=True)
+# if __name__ == '__main__':
+#     cfg, cfg_file, args = parse_args(test=True)
 
 
-    sequence_root = get_sequence_root(args, gt=True)
-    gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
+#     sequence_root = get_sequence_root(args, gt=True)
+#     gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
 
-    sequence_root = get_sequence_root(args, gt=False)
-    if args.run_smplify:
-        wham_data_path = glob(os.path.join(sequence_root, "smplify.pkl"))[0]
-    elif args.run_baseline:
-        wham_data_path = glob(os.path.join(sequence_root, "baseline.pkl"))[0]
-    else:
-        wham_data_path = glob(os.path.join(sequence_root, "eval.pkl"))[0]
+#     sequence_root = get_sequence_root(args, gt=False)
+#     if args.run_smplify:
+#         if args.naive_intrinsics:
+#             wham_data_path = glob(os.path.join(sequence_root, "smplify_naive_intrinsics.pkl"))[0]
+#         else:
+#             wham_data_path = glob(os.path.join(sequence_root, "smplify.pkl"))[0]
+#     elif args.run_baseline:
+#         if args.use_gt_betas:
+#             wham_data_path = glob(os.path.join(sequence_root, "baseline_gt_betas.pkl"))[0]
+#         else:
+#             wham_data_path = glob(os.path.join(sequence_root, "baseline.pkl"))[0]
+#     else:
+#         wham_data_path = glob(os.path.join(sequence_root, "eval.pkl"))[0]
 
-
-    output_pth = wham_data_path
-
-
-    print("Align: ", wham_data_path)
-    run(gt_data_path, wham_data_path, output_pth, args, cfg)
+#     print("Align: ", wham_data_path)
+#     align_and_compute_metrics(gt_data_path, wham_data_path, args, cfg)

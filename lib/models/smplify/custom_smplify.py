@@ -44,7 +44,7 @@ class CustomSMPLify():
         poses_root_world = init_pred['poses_root_world'].squeeze(0)
         
         # Stage 1. Optimize translation
-        params = [to_params(pose), to_params(betas), to_params(cam), to_params(transl_world), to_params(poses_root_world)]
+        params = [to_params(pose), betas, cam, to_params(transl_world), to_params(poses_root_world)]
         optim_params = [params[3], params[4]]
         
         optimizer = torch.optim.LBFGS(
@@ -104,7 +104,7 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
     """
 
     # Create an instance of CustomSMPLify
-    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=200, res=res, device=device)
+    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=10, res=res, device=device)
     
     pose = init_pred['pose']
     betas = init_pred['betas']
@@ -122,7 +122,7 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
     # Copy the initial predictions to update them progressively.
     current_pred = {k: v.clone() for k, v in init_pred.items()}
     
-    window_size = length - 1
+    # window_size = length - 1
 
     for window in range(window_size, length, window_size):
         if window + window_size >= length:

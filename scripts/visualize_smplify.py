@@ -207,22 +207,31 @@ def main(args):
         poses_root=output["pose_world"][:,:3],
         betas=output["betas"],
         trans=output["trans_world"],
-        name="eval + baseline + gt betas",
+        name="eval + baseline + gt betas [growing window]",
         color = (0.8, 0.8, 0.2, 1),
     )    
 
+    path = glob(os.path.join(sequence_root_wham, "baseline_gt_betas_at_once.pkl"))[0]
+    output = joblib.load(path)
+    baseline_beta_at_once_seq = SMPLSequence(
+        output["pose_world"][:,3:],
+        smpl_layer=smpl_layer,
+        poses_root=output["pose_world"][:,:3],
+        betas=output["betas"],
+        trans=output["trans_world"],
+        name="eval + baseline + gt betas [all together]",
+        color = (0.8, 0.2, 0.8, 1),
+    )  
+
     # Create the viewer
     viewer_size = None
-    if args.view_from_camera:
-        target_height = 1080
-        width = int(target_height * cols / rows)
-        viewer_size = (width, target_height)
-
-        # If we view it from the camera drawing the 3D trajectories might be disturbing, suppress it.
-        args.draw_trajectories = False
 
     viewer = Viewer(size=viewer_size)
-    viewer.scene.add(gt_smpl_seq, wham_seq, smplify_seq, baseline_seq, baseline_beta_seq)
+
+    if not args.mini:
+        viewer.scene.add(gt_smpl_seq, wham_seq, smplify_seq, baseline_seq, baseline_beta_seq, baseline_beta_at_once_seq)
+    else:
+        viewer.scene.add(gt_smpl_seq, baseline_beta_at_once_seq)
 
     # Load 2D information.
     kp2d = data["kp2d"]
@@ -294,7 +303,14 @@ def main(args):
             r_base=0.003,
             color=(0.8, 0.8, 0.2, 0.8),
             cast_shadow=False,
-            name="Trajectory: Baseline + GT Betas",
+            name="Trajectory: Baseline + GT Betas [growing window]",
+        )        
+        baseline_beta_at_once_path = LinesTrail(
+            baseline_beta_at_once_seq.joints[:, 0],
+            r_base=0.003,
+            color=(0.8, 0.8, 0.2, 0.8),
+            cast_shadow=False,
+            name="Trajectory: Baseline + GT Betas [all together]",
         )
 
         cam_pos = get_camera_position(extrinsics)
@@ -305,18 +321,19 @@ def main(args):
             cast_shadow=False,
             name="Camera Trajectory: GT",
         )
-        viewer.scene.add(gt_path, wham_path, smplify_path, baseline_path, baseline_beta_path, gt_camera_path)
+        if not args.mini:
+            viewer.scene.add(gt_path, wham_path, smplify_path, baseline_path, baseline_beta_path, gt_camera_path, baseline_beta_at_once_path)
+        else:
+            viewer.scene.add(gt_path, baseline_beta_at_once_path)
 
     # Remaining viewer setup.
     if args.view_from_camera:
         # We view the scene through the camera.
         viewer.set_temp_camera(gt_camera)
-
-        # Hide all the GUI controls, they can be re-enabled by pressing `ESC`.
-        viewer.render_gui = False
     else:
         # We center the scene on the first frame of the SMPL sequence.
         viewer.center_view_on_node(gt_smpl_seq)
+
 
     viewer.scene.origin.enabled = False
     viewer.scene.floor.enabled = False
@@ -340,7 +357,7 @@ if __name__ == "__main__":
         "--view_from_camera",
         action="store_true",
         help="View it from the camera's perspective.",
-        default=False
+        default=True
     )
     parser.add_argument(
         "--draw_2d",
@@ -352,6 +369,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Render SMPL and camera trajectories.",
         default=True
+    )
+    parser.add_argument(
+        "--mini",
+        action='store_true',
+        default=False
     )
 
     parser.add_argument("--gt_camera", default=True, action='store_true', help="Use ground truth camera pose")
