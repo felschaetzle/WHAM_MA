@@ -133,6 +133,10 @@ def run(cfg,
         output = network.forward_smpl(**kwargs)
         pred = network.refine_trajectory(output, return_y_up=True, **kwargs)
 
+    trans_world, root_pose_world = align(gt_data_path, pred['cam'], kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
+                                    cfg.DEVICE, pred['pose'], pred['betas'], pred['trans_world'].squeeze(0), 
+                                    pred['poses_root_world'].squeeze(0).unsqueeze(1), gt_extrinsics, cfg)
+
     if args.run_baseline:
         if args.use_gt_betas:
             gt_betas = gt_data["smpl"]["betas"]
@@ -160,30 +164,24 @@ def run(cfg,
             output = network.forward_smpl(**kwargs)
             pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
 
-    # trans_world, root_pose_world = align(gt_data_path, pred['cam'], kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
-    #                                 cfg.DEVICE, pred['pose'], pred['betas'], pred['trans_world'].squeeze(0), 
-    #                                 pred['poses_root_world'].squeeze(0).unsqueeze(1), gt_extrinsics, cfg)
-
-
-
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
     pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
-    pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
 
-    # pred_root_world = matrix_to_axis_angle(root_pose_world.squeeze(0).unsqueeze(1)).cpu().numpy().reshape(-1, 3)
+    # pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+    pred_root_world = matrix_to_axis_angle(root_pose_world.squeeze(0).unsqueeze(1)).cpu().numpy().reshape(-1, 3)
+
     pred_pose = np.concatenate((pred_root, pred_body_pose), axis=-1)
     pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
     pred_trans = (pred['trans_cam'] - network.output.offset).cpu().numpy()
-    print('network output offset: ', network.output.offset)
+
     results['pose'] = pred_pose
     results['trans'] = pred_trans
     results['pose_world'] = pred_pose_world
 
-    results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
+    # results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
+    results['trans_world'] = trans_world
 
-
-    # results['trans_world'] = trans_world + network.output.offset
     results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
     results['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
     results['bbox'] = kwargs['bbox'].cpu().numpy()

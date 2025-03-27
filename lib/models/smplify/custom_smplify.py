@@ -278,11 +278,11 @@ def align(gt_data_path, cam, bbox, res, cam_intrinsics, smpl, device, pose, beta
         focal_length=cam_intrinsics[ :, 0, 0])
 
     # get joints in camera frame [0]
-    output = smpl.forward_align(pose, betas, trans_opt=trans_cam.squeeze(0))
+    output = smpl.forward_align(pose, betas, trans_opt=trans_cam.squeeze(0), offset=False)
     joints3d_cam = output.joints.cpu()
 
     # get joints in world frame [0]
-    output = smpl.forward_align(pose, betas, trans_opt=transl_wham, global_orient_opt=poses_root_wham)
+    output = smpl.forward_align(pose, betas, trans_opt=transl_wham, global_orient_opt=poses_root_wham, offset=True)
     joints3d_wham = output.joints.cpu()
 
     # align joint from wham[0] to cam[0]
@@ -302,12 +302,6 @@ def align(gt_data_path, cam, bbox, res, cam_intrinsics, smpl, device, pose, beta
 
 
     wham_joints_world = torch.einsum("tij,tnj->tni", R_cam_pose, wham_joints_cam.to(device)) + t_cam_pose[:, None].to(device)
-
-
-    # fit translation and root pose that aligns the joints
-    # smplify = CustomSMPLify(smpl, res=res, device=cfg.DEVICE)
-    # transl_world, poses_root_world = smplify.fit_SMPL_params(wham_joints_world[:, :17, :], transl_world, poses_root_world, pose, betas)
-
 
     return transl_world, poses_root_world
 

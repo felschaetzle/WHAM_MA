@@ -129,7 +129,7 @@ def parse_args(test=False):
     parser.add_argument('--run_smplify', action='store_true', default=False,
                         help='Run Temporal SMPLify for post processing')
     
-    parser.add_argument('--run_baseline', action='store_true', default=True,
+    parser.add_argument('--run_baseline', action='store_true', default=False,
                         help='Run Temporal SMPLify for post processing')
     
     parser.add_argument('--use_gt_betas', action='store_true', default=False,
