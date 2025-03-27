@@ -1,6 +1,8 @@
 import argparse
 from yacs.config import CfgNode as CN
 
+from configs import constants as _C
+
 # Configuration variable
 cfg = CN()
 
@@ -9,7 +11,7 @@ cfg.OUTPUT_DIR = 'results'
 cfg.EXP_NAME = 'default'
 cfg.DEVICE = 'cuda'
 cfg.DEBUG = False
-cfg.EVAL = False
+cfg.EVAL = True
 cfg.RESUME = False
 cfg.LOGDIR = ''
 cfg.NUM_WORKERS = 5
@@ -89,6 +91,8 @@ def bool_arg(value):
 
 
 def parse_args(test=False):
+    subject_id = _C.subject_id
+    sequence_id = _C.sequence_id
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--cfg', type=str, default='./configs/yamls/demo.yaml', help='cfg file path')
     parser.add_argument(
@@ -103,8 +107,38 @@ def parse_args(test=False):
         "opts", default=None, nargs=argparse.REMAINDER,
         help="Modify config options using the command-line")
     
+    parser.add_argument("--subject", type=str, default=subject_id, help="The subject ID, P0 - P9.")
+
+    parser.add_argument(
+        "--sequence",
+        type=str,
+        default=sequence_id,
+        help="The sequence ID. This can be any unambiguous prefix of the sequence's name, i.e. for the "
+        "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
+    )
+
+    parser.add_argument('--output_pth', type=str, default=_C.PATHS.WHAM_OUTPUT, 
+                        help='output folder to write results')
+    
+    parser.add_argument('--visualize', action='store_true',
+                        help='Visualize the output mesh if True')
+
+    parser.add_argument('--save_pkl', action='store_true', default=True,
+                        help='Save output as pkl file')
+    
+    parser.add_argument('--run_smplify', action='store_true', default=False,
+                        help='Run Temporal SMPLify for post processing')
+    
+    parser.add_argument('--run_baseline', action='store_true', default=True,
+                        help='Run Temporal SMPLify for post processing')
+    
+    parser.add_argument('--use_gt_betas', action='store_true', default=False,
+                        help='Use ground truth betas for evaluation')
+
+    parser.add_argument("--naive_intrinsics", action='store_true', default=False)
+
     args = parser.parse_args()
-    print(args, end='\n\n')
+    # print(args, end='\n\n')
     cfg_file = args.cfg
     cfg = get_cfg(args, test)
 

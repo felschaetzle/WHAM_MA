@@ -11,6 +11,7 @@ from lib.eval.eval_utils import first_align_joints_return_R_t
 from matplotlib import pyplot as plt
 import cv2
 from lib.models.smpl import full_perspective_projection
+from lib.models.smplify.custom_losses import create_SMPL_param_closure
 
 import joblib
 class CustomSMPLify():
@@ -75,6 +76,55 @@ class CustomSMPLify():
         init_pred['poses_root_world'] = params[4].detach()
         
         return init_pred
+    
+    def fit_SMPL_params(self, joints3d_world, transl_world, poses_root_world, pose, betas):
+        
+        def to_params(param):
+            return param.requires_grad_(True)
+        
+        lr = self.lr
+
+        T = torch.eye(4).to(self.device)
+        
+        params = [to_params(transl_world.clone()), to_params(poses_root_world.clone())]
+        # params = [to_params(T)]
+
+        # SMPL param recovery
+        optimizer_smpl_params = torch.optim.LBFGS(
+            params, 
+            lr=lr, 
+            max_iter=self.num_iters, 
+            line_search_fn='strong_wolfe')
+                
+        closure_smpl_params = create_SMPL_param_closure(optimizer_smpl_params,
+                    self.smpl, 
+                    params,
+                    joints3d_world,
+                    pose,
+                    betas
+                    )
+        
+        for j in (j_bar := tqdm(range(5), leave=False)):
+            optimizer_smpl_params.zero_grad()
+            loss = optimizer_smpl_params.step(closure_smpl_params)
+            msg = f'Loss: {loss.item():.3f}'
+            j_bar.set_postfix_str(msg)
+            print(loss.item())
+
+        print(f"Final SMPL param opt loss: {loss.item():.1f}")
+
+
+        # T = params[0].detach()
+        # T = T.unsqueeze(0).expand(transl_world.shape[0], -1, -1)
+        # # transform transl and global_orient from wham to world using T
+        # transl_world = torch.matmul(T[:, :3, :3], transl_world.unsqueeze(-1)).squeeze(-1) + T[:, :3, 3]
+        # poses_root_world = torch.matmul(T[:, :3, :3].unsqueeze(1), poses_root_world)
+
+        transl_world = params[0].detach()
+        poses_root_world = params[1].detach()
+
+        
+        return transl_world, poses_root_world
     
 # =============================================================================
 # Progressive Optimization Function
@@ -214,4 +264,50 @@ def W_MPJPE_align(cam, bbox, res, cam_intrinsics, smpl, device, pose, betas, tra
     joints3d_world = torch.cat(joints3d_world, dim=0)
 
     return joints3d_world, transl_world, poses_root_world
+
+def align(gt_data_path, cam, bbox, res, cam_intrinsics, smpl, device, pose, betas, transl_wham, poses_root_wham, gt_extrinsics, cfg):
+    
+    gt_data = joblib.load(gt_data_path)
+
+    trans_cam = convert_pare_to_full_img_cam(
+        cam, 
+        bbox[:, :, 2] * 200., 
+        bbox[:, :, :2], 
+        res[0], 
+        res[1], 
+        focal_length=cam_intrinsics[ :, 0, 0])
+
+    # get joints in camera frame [0]
+    output = smpl.forward_align(pose, betas, trans_opt=trans_cam.squeeze(0))
+    joints3d_cam = output.joints.cpu()
+
+    # get joints in world frame [0]
+    output = smpl.forward_align(pose, betas, trans_opt=transl_wham, global_orient_opt=poses_root_wham)
+    joints3d_wham = output.joints.cpu()
+
+    # align joint from wham[0] to cam[0]
+    wham_joints_cam, R_wham_cam, t_wham_cam = first_align_joints_return_R_t(joints3d_cam, joints3d_wham)
+    R_wham_cam = R_wham_cam.to(device)
+    t_wham_cam = t_wham_cam.to(device)
+    
+    initial_extrinsics = gt_extrinsics[0]
+    cam_pose = np.linalg.inv(initial_extrinsics)
+    R_cam_pose = torch.from_numpy(cam_pose[:3, :3]).unsqueeze(0).float().to(device)
+    t_cam_pose = torch.from_numpy(cam_pose[:3, 3]).unsqueeze(0).float().to(device)
+
+    # apply to translation
+    transl_cam = (R_wham_cam @ transl_wham.unsqueeze(-1)).squeeze(-1) + t_wham_cam
+    transl_world = (R_cam_pose @ transl_cam.unsqueeze(-1)).squeeze(-1) + t_cam_pose
+    poses_root_world = R_cam_pose @ R_wham_cam @ poses_root_wham
+
+
+    wham_joints_world = torch.einsum("tij,tnj->tni", R_cam_pose, wham_joints_cam.to(device)) + t_cam_pose[:, None].to(device)
+
+
+    # fit translation and root pose that aligns the joints
+    # smplify = CustomSMPLify(smpl, res=res, device=cfg.DEVICE)
+    # transl_world, poses_root_world = smplify.fit_SMPL_params(wham_joints_world[:, :17, :], transl_world, poses_root_world, pose, betas)
+
+
+    return transl_world, poses_root_world
 

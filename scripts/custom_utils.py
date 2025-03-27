@@ -22,9 +22,9 @@ def get_sequence_root(args, gt=True):
     if gt:
         """Parse the path of the sequence to be visualized."""
         sequence_id = "{:0>2d}".format(int(args.sequence))
-        print(os.path.join(_C.PATHS.EMDB_PTH,args.subject, sequence_id + "*"))
+        # print(os.path.join(_C.PATHS.EMDB_PTH,args.subject, sequence_id + "*"))
         candidates = glob(os.path.join(_C.PATHS.EMDB_PTH,args.subject, sequence_id + "*"))
-        print(candidates)
+        # print(candidates)
         if len(candidates) == 0:
             raise ValueError(f"Could not find sequence {args.sequence} for subject {args.subject}.")
         elif len(candidates) > 1:
@@ -32,11 +32,10 @@ def get_sequence_root(args, gt=True):
         return candidates[0]
     else:
         """Parse the path of the sequence to be visualized."""
-        print
         sequence_id = "{:0>2d}".format(int(args.sequence))
-        print(os.path.join(_C.PATHS.WHAM_OUTPUT,args.subject+"_"+sequence_id))
+        # print(os.path.join(_C.PATHS.WHAM_OUTPUT,args.subject+"_"+sequence_id))
         candidates = glob(os.path.join(_C.PATHS.WHAM_OUTPUT,args.subject+"_"+sequence_id))
-        print(candidates)
+        # print(candidates)
         if len(candidates) == 0:
             raise ValueError(f"Could not find sequence {args.sequence} for subject {args.subject}.")
         elif len(candidates) > 1:

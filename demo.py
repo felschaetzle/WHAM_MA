@@ -40,6 +40,8 @@ from configs.config import get_cfg_defaults
 from configs.config import parse_args
 
 from scripts.align_emdb import align_and_compute_metrics
+from lib.models.smplify.custom_smplify import align
+
 
 def run(cfg,
         args,
@@ -54,7 +56,7 @@ def run(cfg,
     length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
-    calib = "output/emdb/"+ args.subject + "_" + args.sequence + "/gt_intrinsics.txt"
+    calib = "output/emdb2/"+ args.subject + "_" + args.sequence + "/gt_intrinsics.txt"
 
     eval_loader = setup_eval_dataloader(cfg, 'emdb', args.eval_split, cfg.MODEL.BACKBONE)
     emdb_sequence_index = find_substring(args.subject+"_"+args.sequence, eval_loader.dataset.labels['vid'])
@@ -158,21 +160,42 @@ def run(cfg,
             output = network.forward_smpl(**kwargs)
             pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
 
+    # trans_world, root_pose_world = align(gt_data_path, pred['cam'], kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
+    #                                 cfg.DEVICE, pred['pose'], pred['betas'], pred['trans_world'].squeeze(0), 
+    #                                 pred['poses_root_world'].squeeze(0).unsqueeze(1), gt_extrinsics, cfg)
+
+
+
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
     pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
     pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+
+    # pred_root_world = matrix_to_axis_angle(root_pose_world.squeeze(0).unsqueeze(1)).cpu().numpy().reshape(-1, 3)
     pred_pose = np.concatenate((pred_root, pred_body_pose), axis=-1)
     pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
     pred_trans = (pred['trans_cam'] - network.output.offset).cpu().numpy()
-    
+    print('network output offset: ', network.output.offset)
     results['pose'] = pred_pose
     results['trans'] = pred_trans
     results['pose_world'] = pred_pose_world
+
     results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
+
+
+    # results['trans_world'] = trans_world + network.output.offset
     results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
     results['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
+    results['bbox'] = kwargs['bbox'].cpu().numpy()
+    results['cam'] = pred['cam'].cpu().numpy()
+    results['res'] = kwargs['res'][0].cpu().numpy()
+    results['pose_6d'] = pred['pose'].cpu().numpy()
     
+
+
+
+
+
     if save_pkl:
         if args.run_smplify:
             if args.naive_intrinsics:
@@ -197,7 +220,7 @@ def run(cfg,
             joblib.dump(results, pth)
             print("Save results to ", pth)
 
-    align_and_compute_metrics(gt_data_path, pth, args, cfg)
+    # align_and_compute_metrics(gt_data_path, pth, args, cfg)
 
 if __name__ == '__main__':
     cfg, cfg_file, args = parse_args(test=True)

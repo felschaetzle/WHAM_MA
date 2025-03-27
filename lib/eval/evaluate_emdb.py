@@ -34,9 +34,13 @@ from lib.eval.eval_utils import (
     batch_compute_similarity_transform_torch,
 )
 from lib.utils import transforms
+from lib.utils.transforms import matrix_to_axis_angle
 from lib.utils.utils import prepare_output_dir
 from lib.utils.utils import prepare_batch
 from lib.utils.imutils import avg_preds
+
+import joblib
+import pandas as pd
 
 """
 This is a tentative script to evaluate WHAM on EMDB dataset.
@@ -77,6 +81,8 @@ def main(cfg, args):
     bar = Bar('Inference', fill='#', max=len(eval_loader))
     with torch.no_grad():
         for i in range(len(eval_loader)):
+            # if i !=2:
+            #     continue
             # Original batch
             batch = eval_loader.dataset.load_data(i, False)
             x, inits, features, kwargs, gt = prepare_batch(batch, cfg.DEVICE, cfg.TRAIN.STAGE == 'stage2')
@@ -95,7 +101,7 @@ def main(cfg, args):
             
                 # Forward pass with flipped input
                 flipped_pred = network(f_x, f_inits, f_features, **f_kwargs)
-                
+                print("Flipped prediction")
             # Forward pass with normal input
             pred = network(x, inits, features, **kwargs)
             
@@ -115,6 +121,27 @@ def main(cfg, args):
                 output = network.forward_smpl(**kwargs)
                 pred = network.refine_trajectory(output, return_y_up=True, **kwargs)
             
+                # ========= Store results ========= #
+                pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
+                pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
+                pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+                pred_pose = np.concatenate((pred_root, pred_body_pose), axis=-1)
+                pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
+                pred_trans = (pred['trans_cam'] - network.output.offset).cpu().numpy()
+                
+                results = defaultdict(dict)
+
+                results['pose'] = pred_pose
+                results['trans'] = pred_trans
+                results['pose_world'] = pred_pose_world
+                results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
+                results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
+                results['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
+                
+                path = _C.PATHS.WHAM_OUTPUT + "/P4_36/eval.pkl"
+                joblib.dump(results, path)
+
+
             # <======= Prepare groundtruth data
             subj, seq = batch['vid'][:2], batch['vid'][3:]
             annot_pth = glob(osp.join(_C.PATHS.EMDB_PTH, subj, seq, '*_data.pkl'))[0]
@@ -217,6 +244,24 @@ def main(cfg, args):
             accumulator['FS'].append(foot_sliding)
             # =======>
             
+    #         # <======= Accumulate the results over entire sequences
+    #         accumulator['seq'].append(batch['vid'])
+    #         accumulator['RTE'].append(rte.mean())
+    #         accumulator['pa_mpjpe'].append(pa_mpjpe.mean())
+    #         accumulator['mpjpe'].append(mpjpe.mean())
+    #         # accumulator['pve'].append(pve)
+    #         # accumulator['accel'].append(accel)
+    #         accumulator['w_mpjpe'].append(w_mpjpe.mean())
+    #         accumulator['wa_mpjpe'].append(wa_mpjpe.mean())
+
+    #         # accumulator['jitter'].append(jitter)
+    #         # accumulator['FS'].append(foot_sliding)
+            
+    #         # =======>
+            
+    # df = pd.DataFrame(accumulator)
+    # df.to_csv(_C.PATHS.WHAM_OUTPUT + "/eval_emdb.csv", index=False)
+
     for k, v in accumulator.items():
         accumulator[k] = np.concatenate(v).mean()
 

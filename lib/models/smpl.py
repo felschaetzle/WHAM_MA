@@ -45,6 +45,7 @@ class SMPL(_SMPL):
                 return_full_pose=False,
                 trans_opt=None,
                 global_orient_opt=None,
+                offset=True,
                 **kwargs):
         
         rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(*pred_rot6d.shape[:2], -1, 6)
@@ -57,8 +58,8 @@ class SMPL(_SMPL):
                                  pose2rot=False,
                                  return_full_pose=return_full_pose,
                                  **kwargs)
-            
-            output.joints = output.joints + output.offset.unsqueeze(-2)
+            if offset:
+                output.joints = output.joints + output.offset.unsqueeze(-2)
             return output
         
         elif global_orient_opt is not None:
@@ -69,8 +70,8 @@ class SMPL(_SMPL):
                                  return_full_pose=return_full_pose,
                                  **kwargs)
             
-        
-            output.joints = output.joints + output.offset.unsqueeze(-2)
+            if offset:
+                output.joints = output.joints + output.offset.unsqueeze(-2)
 
             return output
 
@@ -82,10 +83,6 @@ class SMPL(_SMPL):
                 bbox=None, 
                 res=None,
                 return_full_pose=False,
-                use_gt_intrinsics=False,
-                trans_opt=None,
-                global_orient_opt=None,
-                is_matrix=False,
                 **kwargs):
         
         rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(*pred_rot6d.shape[:2], -1, 6)
@@ -96,24 +93,6 @@ class SMPL(_SMPL):
                                  betas=betas.view(-1, 10),
                                  pose2rot=False,
                                  return_full_pose=return_full_pose)
-
-        # if global_orient_opt is None and trans_opt is None:
-        #     output = self.get_output(body_pose=rotmat[:, 1:],
-        #                          global_orient=rotmat[:, :1],
-        #                          betas=betas.view(-1, 10),
-        #                          pose2rot=False,
-        #                          return_full_pose=return_full_pose)
-        # elif global_orient_opt is not None and trans_opt is not None:
-        #     kwargs['transl'] = trans_opt
-        #     output = self.get_output(body_pose=rotmat[:, 1:],
-        #                          global_orient=global_orient_opt,
-        #                          betas=betas.view(-1, 10),
-        #                          pose2rot=False,
-        #                          return_full_pose=return_full_pose,
-        #                          **kwargs)
-                        
-        #     return output
-
 
         if cam is not None:
             joints3d = output.joints.reshape(*cam.shape[:2], -1, 3)

@@ -108,3 +108,27 @@ class CustomSMPLifyLoss(torch.nn.Module):
             return loss
         
         return closure
+    
+def create_SMPL_param_closure(optimizer, smpl, params, joints3d, pose, betas):
+    
+    def closure():
+        optimizer.zero_grad()
+
+        # T = params[0]
+        # T = T.unsqueeze(0).expand(transl.shape[0], -1, -1)
+        # # transform transl and global_orient from wham to world using T
+        # transl_world = torch.matmul(T[:, :3, :3], transl.unsqueeze(-1)).squeeze(-1) + T[:, :3, 3]
+        # global_orient_world = torch.matmul(T[:, :3, :3].unsqueeze(1), global_orient)
+
+
+
+        output = smpl.forward_align(pose, betas, trans_opt=params[0], global_orient_opt=params[1], offset=True)
+        pred_joints3d = output.joints[:, :17, :]
+
+        # Calculate 3D distance between predicted and GT joints
+        loss = torch.linalg.norm(pred_joints3d[0, 0, :] - joints3d[0, 0, :]).mean()  # Ensure loss is a scalar
+        # print("loss: ", loss)
+        loss.backward()
+        return loss
+    
+    return closure

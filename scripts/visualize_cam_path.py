@@ -157,8 +157,48 @@ def main(args):
     with open(data_file, "rb") as f:
         data = pkl.load(f)
 
+    # Set up SMPL layer (RED).
+    gender = data["gender"]
+    smpl_layer = SMPLLayer(model_type="smpl", gender=gender)
+
+    gt_smpl_seq = SMPLSequence(
+        data["smpl"]["poses_body"],
+        smpl_layer=smpl_layer,
+        poses_root=data["smpl"]["poses_root"],
+        betas=data["smpl"]["betas"].reshape((1, -1)),
+        trans=data["smpl"]["trans"],
+        name="Mesh: GT",
+        color=(0.8, 0.2, 0.2, 1),
+    )
+
+    print("gt trans: ", data['smpl']['trans'][0])
 
     sequence_root_wham = get_sequence_root(args, gt=False)
+    path = glob(os.path.join(sequence_root_wham, "eval.pkl"))[0]
+    output = joblib.load(path)
+    wham_seq = SMPLSequence(
+        output["pose_world"][:,3:],
+        smpl_layer=smpl_layer,
+        poses_root=output["pose_world"][:,:3],
+        betas=output["betas"],
+        trans=output["trans_world"],
+        name="WHAM",
+        color = (0.2, 0.8, 0.2, 1),
+    )    
+
+    print("wham aligned: ", output['trans_world'][0])
+    path = glob(os.path.join(sequence_root_wham, "baseline.pkl"))[0]
+    output = joblib.load(path)
+    upper_bound_seq = SMPLSequence(
+        output["pose_world"][:,3:],
+        smpl_layer=smpl_layer,
+        poses_root=output["pose_world"][:,:3],
+        betas=output["betas"],
+        trans=output["trans_world"],
+        name="Upper Bound",
+        color = (0.8, 0.8, 0.2, 1),
+    )  
+
 
     dpvo_path = glob(os.path.join(sequence_root_wham, "slam_results_gt_intrinsics.pth"))[0]
     dpvo_output = joblib.load(dpvo_path)
@@ -229,16 +269,40 @@ def main(args):
         name="Image",
     )
 
-    viewer.scene.add(gt_camera, dpvo_camera)
+    viewer.scene.add(raw_images_bb, gt_camera, dpvo_camera, gt_smpl_seq, wham_seq, upper_bound_seq)
 
 
     if args.draw_trajectories:
         # Add a path trail for the SMPL root trajectory.
         
+        gt_path = LinesTrail(
+            gt_smpl_seq.joints[:, 0],
+            r_base=0.003,
+            color=(0.8, 0.2, 0.2, 0.8),
+            cast_shadow=False,
+            name="Trajectory: GT",
+        )
+
+        wham_path = LinesTrail(
+            wham_seq.joints[:, 0],
+            r_base=0.003,
+            color=(0.2, 0.8, 0.2, 0.8),
+            cast_shadow=False,
+            name="Trajectory: WHAM",
+        )
+
+        upper_bound_path = LinesTrail(
+            upper_bound_seq.joints[:, 0],
+            r_base=0.003,
+            color=(0.8, 0.8, 0.2, 0.8),
+            cast_shadow=False,
+            name="Trajectory: Baseline + GT Betas [all together]",
+        )
+
         cam_pos = get_camera_position(extrinsics)
         gt_camera_path = LinesTrail(
             cam_pos,
-            r_base=0.03,
+            r_base=0.003,
             color=(0.8, 0.2, 0.2, 1),
             cast_shadow=False,
             name="Camera Trajectory: GT",
@@ -247,14 +311,14 @@ def main(args):
         dpvo_pos = get_camera_position(dpvo_extrinsics)
         dpvo_cam_path = LinesTrail(
             dpvo_pos,
-            r_base=0.03,
+            r_base=0.003,
             color=(0.2, 0.8, 0.2, 1),
             cast_shadow=False,
             name="Camera Trajectory: DPVO",
         )
 
         if not args.mini:
-            viewer.scene.add(gt_camera_path, dpvo_cam_path)
+            viewer.scene.add(gt_camera_path, dpvo_cam_path, gt_path, wham_path, upper_bound_path)
         else:
             viewer.scene.add(gt_camera_path)
 

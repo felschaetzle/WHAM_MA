@@ -17,8 +17,8 @@ import os.path as osp
 from scripts.custom_utils import open_pkl
 
 from lib.utils.transforms import matrix_to_axis_angle, axis_angle_to_matrix
-from lib.eval.eval_utils import compute_pred_trans_hat, global_align_joints, compute_rte, first_align_joints, align_pcl, compute_jpe, batch_align_by_pelvis, batch_compute_similarity_transform_torch
-
+from lib.eval.eval_utils import first_align_joints_return_R_t, compute_pred_trans_hat, global_align_joints, compute_rte, first_align_joints, align_pcl, compute_jpe, batch_align_by_pelvis, batch_compute_similarity_transform_torch
+from scripts.custom_utils import get_sequence_root
 
 import sys
 sys.path.append("/home/felix/WHAM_MA")
@@ -27,11 +27,12 @@ from configs import constants as _C
 from scipy.spatial.transform import Rotation as R
 from lib.utils import transforms
 from configs.config import parse_args
+from lib.models.smpl import convert_pare_to_full_img_cam
 
 m2mm = 1e3
 pelvis_idxs = [1, 2]
 
-def align_and_compute_metrics(gt_pth, wham_pth, args, cfg):
+def align_and_compute_metrics(gt_pth, wham_pth, args, cfg, smpl_align):
 
     yup2ydown = transforms.axis_angle_to_matrix(torch.tensor([[np.pi, 0, 0]])).float()
 
@@ -81,10 +82,23 @@ def align_and_compute_metrics(gt_pth, wham_pth, args, cfg):
     body_pose = transforms.axis_angle_to_matrix(tt(body_pose))
     root_cam = transforms.axis_angle_to_matrix(tt(root_cam))
 
+    trans_cam = convert_pare_to_full_img_cam(
+        torch.tensor(wham['cam']), 
+        torch.tensor(wham['bbox'][:, :, 2]) * 200., 
+        torch.tensor(wham['bbox'][:, :, :2]), 
+        wham['res'][1], 
+        wham['res'][0], 
+        focal_length=annot['camera']['intrinsics'][0, 0])
+
+    align_pred_j3d_cam = smpl_align.forward_align(torch.from_numpy(wham['pose_6d']).to(cfg.DEVICE), torch.from_numpy(betas).to(cfg.DEVICE), trans_opt=trans_cam.squeeze(0).to(cfg.DEVICE))
+
     # Predicted local motion
     pred_cam = smpl['neutral'](body_pose=body_pose, global_orient=root_cam.unsqueeze(1), betas=tt(betas), pose2rot=False)
     pred_verts_cam = pred_cam.vertices
     pred_j3d_cam = pred_cam.joints[:, :24]
+
+
+    align_pred_j3d_wham = smpl_align.forward_align(torch.from_numpy(wham['pose_6d']).to(cfg.DEVICE), torch.from_numpy(betas).to(cfg.DEVICE), trans_opt=tt(pred_trans_world), global_orient_opt=tt(pred_pose_world).unsqueeze(1))
 
     # Predicted global motion
     pred_glob = smpl['neutral'](body_pose=body_pose, global_orient=tt(pred_pose_world).unsqueeze(1), betas=tt(betas), transl=tt(pred_trans_world), pose2rot=False)
@@ -129,10 +143,29 @@ def align_and_compute_metrics(gt_pth, wham_pth, args, cfg):
     print("W-MPJPE: ", w_mpjpe.mean())
     print("WA-MPJPE: ", wa_mpjpe.mean())
 
-    trans_hat, rot = compute_pred_trans_hat(gt_trans_world, pred_trans_world)
-    root_poses_hat = rot @ pred_pose_world
-    # root_poses_hat = yup2ydown @ rot @ pred_pose_world
-    root_poses_hat = R.from_matrix(root_poses_hat.squeeze(0).numpy()).as_rotvec()
+    # trans_hat, rot = compute_pred_trans_hat(gt_trans_world, pred_trans_world)
+
+    # align joint from wham[0] to cam[0]
+    wham_joints_cam, R_wham_cam, t_wham_cam = first_align_joints_return_R_t(align_pred_j3d_cam.joints.cpu(), align_pred_j3d_wham.joints.cpu())
+    R_wham_cam = R_wham_cam.to(cfg.DEVICE)
+    t_wham_cam = t_wham_cam.to(cfg.DEVICE)
+    
+    initial_extrinsics = gt_cam[0]
+    cam_pose = np.linalg.inv(initial_extrinsics)
+    R_cam_pose = torch.tensor(cam_pose[:3, :3]).unsqueeze(0).float().to(cfg.DEVICE)
+    t_cam_pose = torch.tensor(cam_pose[:3, 3]).unsqueeze(0).float().to(cfg.DEVICE)
+
+    # apply to translation
+    transl_cam = (R_wham_cam @ pred_trans_world.to(cfg.DEVICE).unsqueeze(-1)).squeeze(-1) + t_wham_cam
+    trans_hat = (R_cam_pose @ transl_cam.unsqueeze(-1)).squeeze(-1) + t_cam_pose
+    # apply to rotation
+    root_poses_hat = R_cam_pose @ R_wham_cam @ pred_pose_world.to(cfg.DEVICE)
+
+
+
+
+    # root_poses_hat = rot @ pred_pose_world
+    root_poses_hat = R.from_matrix(root_poses_hat.squeeze(0).cpu().detach().numpy()).as_rotvec()
 
 
     # Compute the entire displacement of ground truth trajectory
@@ -143,7 +176,7 @@ def align_and_compute_metrics(gt_pth, wham_pth, args, cfg):
         disps.append(disp)
     
     # Compute absolute root-translation-error (RTE)
-    rte = torch.norm(gt_trans_world - trans_hat, 2, dim=-1)
+    rte = torch.norm(gt_trans_world - trans_hat.cpu(), 2, dim=-1)
     
     # Normalize it to the displacement
     rte = compute_rte(gt_trans_world, pred_trans_world) * 1e2
@@ -151,7 +184,7 @@ def align_and_compute_metrics(gt_pth, wham_pth, args, cfg):
     print("Normalized RTE: ", mean_rte)
 
 
-    wham["trans_world_hat"] = trans_hat
+    wham["trans_world_hat"] = trans_hat.cpu().detach().numpy()
     wham["pose_world_hat"] = root_poses_hat
     wham["rte"] = mean_rte
     wham["pa_mpjpe"] = pa_mpjpe.mean()
@@ -164,26 +197,29 @@ def align_and_compute_metrics(gt_pth, wham_pth, args, cfg):
     print("DONE")
 
 
-# if __name__ == '__main__':
-#     cfg, cfg_file, args = parse_args(test=True)
+if __name__ == '__main__':
+    cfg, cfg_file, args = parse_args(test=True)
 
 
-#     sequence_root = get_sequence_root(args, gt=True)
-#     gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
+    sequence_root = get_sequence_root(args, gt=True)
+    gt_data_path = glob(os.path.join(sequence_root, "*_data.pkl"))[0]
 
-#     sequence_root = get_sequence_root(args, gt=False)
-#     if args.run_smplify:
-#         if args.naive_intrinsics:
-#             wham_data_path = glob(os.path.join(sequence_root, "smplify_naive_intrinsics.pkl"))[0]
-#         else:
-#             wham_data_path = glob(os.path.join(sequence_root, "smplify.pkl"))[0]
-#     elif args.run_baseline:
-#         if args.use_gt_betas:
-#             wham_data_path = glob(os.path.join(sequence_root, "baseline_gt_betas.pkl"))[0]
-#         else:
-#             wham_data_path = glob(os.path.join(sequence_root, "baseline.pkl"))[0]
-#     else:
-#         wham_data_path = glob(os.path.join(sequence_root, "eval.pkl"))[0]
+    sequence_root = get_sequence_root(args, gt=False)
+    if args.run_smplify:
+        if args.naive_intrinsics:
+            wham_data_path = glob(os.path.join(sequence_root, "smplify_naive_intrinsics.pkl"))[0]
+        else:
+            wham_data_path = glob(os.path.join(sequence_root, "smplify.pkl"))[0]
+    elif args.run_baseline:
+        if args.use_gt_betas:
+            wham_data_path = glob(os.path.join(sequence_root, "baseline_gt_betas.pkl"))[0]
+        else:
+            wham_data_path = glob(os.path.join(sequence_root, "baseline.pkl"))[0]
+    else:
+        wham_data_path = glob(os.path.join(sequence_root, "eval.pkl"))[0]
 
-#     print("Align: ", wham_data_path)
-#     align_and_compute_metrics(gt_data_path, wham_data_path, args, cfg)
+    smpl_batch_size = cfg.TRAIN.BATCH_SIZE * cfg.DATASET.SEQLEN
+    smpl_align = build_body_model(cfg.DEVICE, smpl_batch_size)
+
+    print("Align: ", wham_data_path)
+    align_and_compute_metrics(gt_data_path, wham_data_path, args, cfg, smpl_align)
