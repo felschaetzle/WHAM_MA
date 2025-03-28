@@ -32,7 +32,7 @@ from lib.models.smpl import convert_pare_to_full_img_cam
 m2mm = 1e3
 pelvis_idxs = [1, 2]
 
-def align_and_compute_metrics(gt_pth, wham_pth, args, cfg, smpl_align):
+def align_and_compute_metrics(gt_pth, wham_pth, cfg):
 
     yup2ydown = transforms.axis_angle_to_matrix(torch.tensor([[np.pi, 0, 0]])).float()
 
@@ -82,23 +82,10 @@ def align_and_compute_metrics(gt_pth, wham_pth, args, cfg, smpl_align):
     body_pose = transforms.axis_angle_to_matrix(tt(body_pose))
     root_cam = transforms.axis_angle_to_matrix(tt(root_cam))
 
-    trans_cam = convert_pare_to_full_img_cam(
-        torch.tensor(wham['cam']), 
-        torch.tensor(wham['bbox'][:, :, 2]) * 200., 
-        torch.tensor(wham['bbox'][:, :, :2]), 
-        wham['res'][1], 
-        wham['res'][0], 
-        focal_length=annot['camera']['intrinsics'][0, 0])
-
-    align_pred_j3d_cam = smpl_align.forward_align(torch.from_numpy(wham['pose_6d']).to(cfg.DEVICE), torch.from_numpy(betas).to(cfg.DEVICE), trans_opt=trans_cam.squeeze(0).to(cfg.DEVICE))
-
     # Predicted local motion
     pred_cam = smpl['neutral'](body_pose=body_pose, global_orient=root_cam.unsqueeze(1), betas=tt(betas), pose2rot=False)
     pred_verts_cam = pred_cam.vertices
     pred_j3d_cam = pred_cam.joints[:, :24]
-
-
-    align_pred_j3d_wham = smpl_align.forward_align(torch.from_numpy(wham['pose_6d']).to(cfg.DEVICE), torch.from_numpy(betas).to(cfg.DEVICE), trans_opt=tt(pred_trans_world), global_orient_opt=tt(pred_pose_world).unsqueeze(1))
 
     # Predicted global motion
     pred_glob = smpl['neutral'](body_pose=body_pose, global_orient=tt(pred_pose_world).unsqueeze(1), betas=tt(betas), transl=tt(pred_trans_world), pose2rot=False)
@@ -140,33 +127,32 @@ def align_and_compute_metrics(gt_pth, wham_pth, args, cfg, smpl_align):
     w_mpjpe = np.concatenate(w_mpjpe) * m2mm
     wa_mpjpe = np.concatenate(wa_mpjpe) * m2mm
 
-    print("W-MPJPE: ", w_mpjpe.mean())
+    # print("W-MPJPE: ", w_mpjpe.mean())
     print("WA-MPJPE: ", wa_mpjpe.mean())
 
     # trans_hat, rot = compute_pred_trans_hat(gt_trans_world, pred_trans_world)
 
-    # align joint from wham[0] to cam[0]
-    wham_joints_cam, R_wham_cam, t_wham_cam = first_align_joints_return_R_t(align_pred_j3d_cam.joints.cpu(), align_pred_j3d_wham.joints.cpu())
-    R_wham_cam = R_wham_cam.to(cfg.DEVICE)
-    t_wham_cam = t_wham_cam.to(cfg.DEVICE)
+    # # align joint from wham[0] to cam[0]
+    # wham_joints_cam, R_wham_cam, t_wham_cam = first_align_joints_return_R_t(align_pred_j3d_cam.joints.cpu(), align_pred_j3d_wham.joints.cpu())
+    # R_wham_cam = R_wham_cam.to(cfg.DEVICE)
+    # t_wham_cam = t_wham_cam.to(cfg.DEVICE)
     
-    initial_extrinsics = gt_cam[0]
-    cam_pose = np.linalg.inv(initial_extrinsics)
-    R_cam_pose = torch.tensor(cam_pose[:3, :3]).unsqueeze(0).float().to(cfg.DEVICE)
-    t_cam_pose = torch.tensor(cam_pose[:3, 3]).unsqueeze(0).float().to(cfg.DEVICE)
+    # initial_extrinsics = gt_cam[0]
+    # cam_pose = np.linalg.inv(initial_extrinsics)
+    # R_cam_pose = torch.tensor(cam_pose[:3, :3]).unsqueeze(0).float().to(cfg.DEVICE)
+    # t_cam_pose = torch.tensor(cam_pose[:3, 3]).unsqueeze(0).float().to(cfg.DEVICE)
 
-    # apply to translation
-    transl_cam = (R_wham_cam @ pred_trans_world.to(cfg.DEVICE).unsqueeze(-1)).squeeze(-1) + t_wham_cam
-    trans_hat = (R_cam_pose @ transl_cam.unsqueeze(-1)).squeeze(-1) + t_cam_pose
-    # apply to rotation
-    root_poses_hat = R_cam_pose @ R_wham_cam @ pred_pose_world.to(cfg.DEVICE)
-
-
+    # # apply to translation
+    # transl_cam = (R_wham_cam @ pred_trans_world.to(cfg.DEVICE).unsqueeze(-1)).squeeze(-1) + t_wham_cam
+    # trans_hat = (R_cam_pose @ transl_cam.unsqueeze(-1)).squeeze(-1) + t_cam_pose
+    # # apply to rotation
+    # root_poses_hat = R_cam_pose @ R_wham_cam @ pred_pose_world.to(cfg.DEVICE)
 
 
-    # root_poses_hat = rot @ pred_pose_world
-    root_poses_hat = R.from_matrix(root_poses_hat.squeeze(0).cpu().detach().numpy()).as_rotvec()
-
+    trans_hat, rot = compute_pred_trans_hat(gt_trans_world, pred_trans_world)
+    root_poses_hat = rot @ pred_pose_world
+    # root_poses_hat = yup2ydown @ rot @ pred_pose_world
+    root_poses_hat = R.from_matrix(root_poses_hat.squeeze(0).numpy()).as_rotvec()
 
     # Compute the entire displacement of ground truth trajectory
     disps, disp = [], 0

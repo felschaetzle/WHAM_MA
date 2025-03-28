@@ -505,7 +505,7 @@ def compute_pred_trans_hat(target_trans, pred_trans):
         s * torch.einsum("tij,tnj->tni", rot, pred_trans[None, :]) + trans[None, :]
     )[0]
     
-    return pred_trans_hat.numpy(), rot
+    return pred_trans_hat, rot
 
 def align_extrinsics(Y, X, weight=None, fixed_scale=False):
     """

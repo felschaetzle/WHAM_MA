@@ -41,6 +41,7 @@ from configs.config import parse_args
 
 from scripts.align_emdb import align_and_compute_metrics
 from lib.models.smplify.custom_smplify import align
+from scripts.visualize_cam_path import invert_camera_poses
 
 
 def run(cfg,
@@ -56,7 +57,7 @@ def run(cfg,
     length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width, height = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
-    calib = "output/emdb2/"+ args.subject + "_" + args.sequence + "/gt_intrinsics.txt"
+    calib = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/gt_intrinsics.txt"
 
     eval_loader = setup_eval_dataloader(cfg, 'emdb', args.eval_split, cfg.MODEL.BACKBONE)
     emdb_sequence_index = find_substring(args.subject+"_"+args.sequence, eval_loader.dataset.labels['vid'])
@@ -133,11 +134,7 @@ def run(cfg,
         output = network.forward_smpl(**kwargs)
         pred = network.refine_trajectory(output, return_y_up=True, **kwargs)
 
-    trans_world, root_pose_world = align(gt_data_path, pred['cam'], kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
-                                    cfg.DEVICE, pred['pose'], pred['betas'], pred['trans_world'].squeeze(0), 
-                                    pred['poses_root_world'].squeeze(0).unsqueeze(1), gt_extrinsics, cfg)
 
-    if args.run_baseline:
         if args.use_gt_betas:
             gt_betas = gt_data["smpl"]["betas"]
             gt_betas = gt_betas.reshape(1, 1, 10)
@@ -145,6 +142,10 @@ def run(cfg,
             gt_betas = torch.tensor(gt_betas).float().to(cfg.DEVICE)
             pred['betas'] = gt_betas
 
+    pred = align(gt_data_path, pred, kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
+                cfg.DEVICE, gt_extrinsics)
+
+    if args.upper_bound:
         kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
         pred = progressive_global_translation_optimization(
@@ -163,13 +164,34 @@ def run(cfg,
             network.pred_cam = pred['cam']
             output = network.forward_smpl(**kwargs)
             pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+    
+    if args.baseline:
+        dpvo_path = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/slam_results_gt_intrinsics.pth"
+        dpvo_output = joblib.load(dpvo_path)
+        print(len(dpvo_output))
+        dpvo_orientation = R.from_quat(dpvo_output[:,3:]).as_matrix()
+        dpvo_trans = dpvo_output[:,:3]
+        # create dpvo_cam object
+
+        # Create 4x4 transformation matrices for dpvo_cam
+        dpvo_cam = np.eye(4)[None].repeat(len(dpvo_orientation), axis=0)
+        dpvo_cam[:, :3, :3] = dpvo_orientation
+        dpvo_cam[:, :3, 3] = dpvo_trans
+        dpvo_extrinsics = invert_camera_poses(dpvo_cam)
+
+        kwargs["gt_extrinsics"] = torch.tensor(dpvo_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+        input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
+        pred = progressive_global_translation_optimization(
+            pred, input_keypoints, kwargs['bbox'],
+            kwargs['gt_extrinsics'], kwargs['cam_intrinsics'],
+            smpl, cfg.DEVICE, length, kwargs['res'][0,:])
 
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
     pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
 
-    # pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-    pred_root_world = matrix_to_axis_angle(root_pose_world.squeeze(0).unsqueeze(1)).cpu().numpy().reshape(-1, 3)
+    pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+    # pred_root_world = matrix_to_axis_angle(root_pose_world.squeeze(0).unsqueeze(1)).cpu().numpy().reshape(-1, 3)
 
     pred_pose = np.concatenate((pred_root, pred_body_pose), axis=-1)
     pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
@@ -179,8 +201,8 @@ def run(cfg,
     results['trans'] = pred_trans
     results['pose_world'] = pred_pose_world
 
-    # results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
-    results['trans_world'] = trans_world
+    results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
+    # results['trans_world'] = trans_world
 
     results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
     results['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
@@ -189,11 +211,6 @@ def run(cfg,
     results['res'] = kwargs['res'][0].cpu().numpy()
     results['pose_6d'] = pred['pose'].cpu().numpy()
     
-
-
-
-
-
     if save_pkl:
         if args.run_smplify:
             if args.naive_intrinsics:
@@ -204,21 +221,25 @@ def run(cfg,
                 pth = osp.join(output_pth, "smplify.pkl")
                 joblib.dump(results, pth)
                 print("Save results to ", pth)
-        elif args.run_baseline:
-            if args.use_gt_betas:
-                pth = osp.join(output_pth, "baseline_gt_betas_at_once.pkl")
-                joblib.dump(results, pth)
-                print("Save results to ", pth)
-            else:
-                pth = osp.join(output_pth, "baseline.pkl")
-                joblib.dump(results, pth)
-                print("Save results to ", pth)
+        elif args.upper_bound:
+            # if args.use_gt_betas:
+            #     pth = osp.join(output_pth, "upper_bound_betas.pkl")
+            #     joblib.dump(results, pth)
+            #     print("Save results to ", pth)
+            # else:
+            pth = osp.join(output_pth, "upper_bound.pkl")
+            joblib.dump(results, pth)
+            print("Save results to ", pth)
+        elif args.baseline:
+            pth = osp.join(output_pth, "baseline.pkl")
+            joblib.dump(results, pth)
+            print("Save results to ", pth)
         else:
             pth = osp.join(output_pth, "eval.pkl")
             joblib.dump(results, pth)
             print("Save results to ", pth)
 
-    # align_and_compute_metrics(gt_data_path, pth, args, cfg)
+    align_and_compute_metrics(gt_data_path, pth, cfg)
 
 if __name__ == '__main__':
     cfg, cfg_file, args = parse_args(test=True)

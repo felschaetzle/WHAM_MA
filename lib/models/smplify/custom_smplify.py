@@ -113,13 +113,6 @@ class CustomSMPLify():
 
         print(f"Final SMPL param opt loss: {loss.item():.1f}")
 
-
-        # T = params[0].detach()
-        # T = T.unsqueeze(0).expand(transl_world.shape[0], -1, -1)
-        # # transform transl and global_orient from wham to world using T
-        # transl_world = torch.matmul(T[:, :3, :3], transl_world.unsqueeze(-1)).squeeze(-1) + T[:, :3, 3]
-        # poses_root_world = torch.matmul(T[:, :3, :3].unsqueeze(1), poses_root_world)
-
         transl_world = params[0].detach()
         poses_root_world = params[1].detach()
 
@@ -177,6 +170,7 @@ def progressive_global_translation_optimization(init_pred, keypoints, bbox,
     for window in range(window_size, length, window_size):
         if window + window_size >= length:
             window = length
+            # custom_smplify.num_steps *= 2
         print(f"\n===== Optimizing frames 1-{window} =====")
         # Slice the data for the current window.
         pred_window = {}
@@ -231,11 +225,13 @@ def W_MPJPE_align(cam, bbox, res, cam_intrinsics, smpl, device, pose, betas, tra
             focal_length=cam_intrinsics[:, :, 0, 0])
 
         # get joints in camera frame [0]
-        output = smpl.forward_align(pose[:,window:window+1], betas[:,window:window+1], trans_opt=trans_cam[:,window:window+1].squeeze(0))
+        output = smpl.forward_align(pose[:,window:window+1], betas[:,window:window+1], trans_opt=trans_cam[:,window:window+1].squeeze(0), offset=False)
         joints3d_cam = output.joints.cpu()
 
         # get joints in world frame [0]
-        output = smpl.forward_align(pose[:,window:window+window_size], betas[:,window:window+window_size], trans_opt=transl_wham_world[window:window+window_size], global_orient_opt=poses_root_wham_world[window:window+window_size])
+        output = smpl.forward_align(pose[:,window:window+window_size], betas[:,window:window+window_size], 
+                                    trans_opt=transl_wham_world[window:window+window_size], 
+                                    global_orient_opt=poses_root_wham_world[window:window+window_size], offset=True)
         joints3d_wham = output.joints.cpu()
 
         # align joint from wham[0] to cam[0]
@@ -265,9 +261,14 @@ def W_MPJPE_align(cam, bbox, res, cam_intrinsics, smpl, device, pose, betas, tra
 
     return joints3d_world, transl_world, poses_root_world
 
-def align(gt_data_path, cam, bbox, res, cam_intrinsics, smpl, device, pose, betas, transl_wham, poses_root_wham, gt_extrinsics, cfg):
+def align(gt_data_path, pred, bbox, res, cam_intrinsics, smpl, device, gt_extrinsics):
     
     gt_data = joblib.load(gt_data_path)
+    pose = pred['pose']
+    betas = pred['betas']
+    cam = pred['cam']
+    transl_wham = pred['trans_world'].squeeze(0)
+    poses_root_wham = pred['poses_root_world'].squeeze(0).unsqueeze(1)
 
     trans_cam = convert_pare_to_full_img_cam(
         cam, 
@@ -303,5 +304,8 @@ def align(gt_data_path, cam, bbox, res, cam_intrinsics, smpl, device, pose, beta
 
     wham_joints_world = torch.einsum("tij,tnj->tni", R_cam_pose, wham_joints_cam.to(device)) + t_cam_pose[:, None].to(device)
 
-    return transl_world, poses_root_world
+    pred['trans_world'] = transl_world.unsqueeze(0)
+    pred['poses_root_world'] = poses_root_world.squeeze(1).unsqueeze(0)
+
+    return pred
 

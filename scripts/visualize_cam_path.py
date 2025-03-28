@@ -187,7 +187,7 @@ def main(args):
     )    
 
     print("wham aligned: ", output['trans_world'][0])
-    path = glob(os.path.join(sequence_root_wham, "baseline.pkl"))[0]
+    path = glob(os.path.join(sequence_root_wham, "upper_bound.pkl"))[0]
     output = joblib.load(path)
     upper_bound_seq = SMPLSequence(
         output["pose_world"][:,3:],
@@ -296,7 +296,7 @@ def main(args):
             r_base=0.003,
             color=(0.8, 0.8, 0.2, 0.8),
             cast_shadow=False,
-            name="Trajectory: Baseline + GT Betas [all together]",
+            name="Upper bound",
         )
 
         cam_pos = get_camera_position(extrinsics)

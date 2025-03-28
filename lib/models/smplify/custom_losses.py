@@ -67,7 +67,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         pose_diff = compute_jitter(pose).mean()
         # cam_diff = compute_jitter(cam).mean() # 0.0
         trans_diff = compute_jitter(params[3]).mean() # translation in global coords
-        smooth_error = pose_diff + trans_diff/100
+        smooth_error = pose_diff + trans_diff/10
         
         # Sum up losses
         loss = {
