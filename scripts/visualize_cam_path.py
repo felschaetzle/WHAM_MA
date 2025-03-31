@@ -174,16 +174,27 @@ def main(args):
     print("gt trans: ", data['smpl']['trans'][0])
 
     sequence_root_wham = get_sequence_root(args, gt=False)
-    path = glob(os.path.join(sequence_root_wham, "eval.pkl"))[0]
+    path = glob(os.path.join(sequence_root_wham, "baseline.pkl"))[0]
     output = joblib.load(path)
-    wham_seq = SMPLSequence(
+    baseline_seq = SMPLSequence(
         output["pose_world"][:,3:],
         smpl_layer=smpl_layer,
         poses_root=output["pose_world"][:,:3],
         betas=output["betas"],
         trans=output["trans_world"],
-        name="WHAM",
+        name="Basline",
         color = (0.2, 0.8, 0.2, 1),
+    )    
+
+
+    baseline_align_seq = SMPLSequence(
+        output["pose_world"][:,3:],
+        smpl_layer=smpl_layer,
+        poses_root=output["pose_world"][:,:3],
+        betas=output["betas"],
+        trans=output["trans_world_align"],
+        name="Baseline align only",
+        color = (0.2, 0.8, 0.8, 1),
     )    
 
     print("wham aligned: ", output['trans_world'][0])
@@ -245,6 +256,7 @@ def main(args):
     # smpl_trans = data['smpl']['trans']
     
     scale_pos = torch.tensor(scale_pos, dtype=torch.float32)
+    smpl_trans = torch.tensor(smpl_trans, dtype=torch.float32)
     smpl_trans = torch.tensor(data['smpl']['trans'], dtype=torch.float32)
     
     scale, _, _ = align_pcl(smpl_trans.unsqueeze(0), scale_pos.unsqueeze(0))
@@ -269,8 +281,10 @@ def main(args):
         name="Image",
     )
 
-    viewer.scene.add(raw_images_bb, gt_camera, dpvo_camera, gt_smpl_seq, wham_seq, upper_bound_seq)
-
+    if not args.mini:
+        viewer.scene.add(raw_images_bb, gt_camera, dpvo_camera, gt_smpl_seq, baseline_seq, baseline_align_seq, upper_bound_seq)
+    else:
+        viewer.scene.add(raw_images_bb, dpvo_camera, gt_smpl_seq, baseline_align_seq, baseline_seq)
 
     if args.draw_trajectories:
         # Add a path trail for the SMPL root trajectory.
@@ -283,13 +297,22 @@ def main(args):
             name="Trajectory: GT",
         )
 
-        wham_path = LinesTrail(
-            wham_seq.joints[:, 0],
+        baseline_path = LinesTrail(
+            baseline_seq.joints[:, 0],
             r_base=0.003,
             color=(0.2, 0.8, 0.2, 0.8),
             cast_shadow=False,
-            name="Trajectory: WHAM",
+            name="Trajectory: Basline",
         )
+
+        baseline_align_path = LinesTrail(
+            baseline_align_seq.joints[:, 0],
+            r_base=0.003,
+            color=(0.2, 0.8, 0.2, 0.8),
+            cast_shadow=False,
+            name="Trajectory: Basline align only",
+        )
+
 
         upper_bound_path = LinesTrail(
             upper_bound_seq.joints[:, 0],
@@ -318,9 +341,9 @@ def main(args):
         )
 
         if not args.mini:
-            viewer.scene.add(gt_camera_path, dpvo_cam_path, gt_path, wham_path, upper_bound_path)
+            viewer.scene.add(gt_camera_path, dpvo_cam_path, gt_path, baseline_path, baseline_align_path, upper_bound_path)
         else:
-            viewer.scene.add(gt_camera_path)
+            viewer.scene.add(gt_path, baseline_align_path, baseline_path)
 
     # Remaining viewer setup.
     if args.view_from_camera:

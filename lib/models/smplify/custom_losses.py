@@ -41,12 +41,11 @@ class CustomSMPLifyLoss(torch.nn.Module):
         self.init_pose = init_pose
         self.gt_extrinsics = gt_extrinsics
         
-    def forward(self, joints_2d, params, input_keypoints, bbox, joints_3d,
+    def forward(self, joints_2d, params, input_keypoints, bbox, init_pred, joints3d_cam, joints3d_cam_pred,
                 reprojection_weight=100., regularize_weight=60.0, 
                 consistency_weight=10.0, sprior_weight=0.04, 
                 smooth_weight=20.0, sigma=100):
         
-        pose, shape, cam, _ , _ = params
         scale = bbox[..., 2:].unsqueeze(-1) * 200.
 
         # Loss 1. Data term
@@ -56,25 +55,31 @@ class CustomSMPLifyLoss(torch.nn.Module):
         reprojection_error = ((reprojection_error * joints_conf) / scale).mean()
         
         # Loss 2. Regularization term
-        regularize_error = torch.linalg.norm(pose - self.init_pose, dim=-1).mean()
+        regularize_error = torch.linalg.norm(init_pred['pose'] - self.init_pose, dim=-1).mean()
         
         # Loss 3. Shape prior and consistency error
-        consistency_error = shape.std(dim=1).mean()
-        sprior_error = torch.linalg.norm(shape, dim=-1).mean()
+        consistency_error = init_pred['betas'].std(dim=1).mean()
+        sprior_error = torch.linalg.norm(init_pred['betas'], dim=-1).mean()
         shape_error = sprior_weight * sprior_error + consistency_weight * consistency_error
         
         # Loss 4. Smooth loss
-        pose_diff = compute_jitter(pose).mean()
+        pose_diff = compute_jitter(init_pred['pose']).mean()
         # cam_diff = compute_jitter(cam).mean() # 0.0
-        trans_diff = compute_jitter(params[3]).mean() # translation in global coords
-        smooth_error = pose_diff + trans_diff/10
-        
-        # Sum up losses
+        trans_diff = compute_jitter(params[0]).mean() # translation in global coords
+        local_trans_diff = compute_jitter(joints3d_cam).mean() #  translation in local coords
+        smooth_error = pose_diff + trans_diff/10 + local_trans_diff/10
+
+
+        local_trans_diff = gmof(joints3d_cam - joints3d_cam_pred, sigma).mean() #  translation in local coords
+
+
+          # Sum up losses
         loss = {
             'reprojection': reprojection_weight * reprojection_error,
-            'regularize': regularize_weight * regularize_error,
+            # 'regularize': regularize_weight * regularize_error,
             # 'shape': shape_error,
-            'smooth': smooth_weight * smooth_error
+            'smooth': smooth_weight/30 * smooth_error,
+            'local': local_trans_diff/10
         }
         
         return loss
@@ -84,13 +89,14 @@ class CustomSMPLifyLoss(torch.nn.Module):
                        smpl, 
                        params,
                        bbox,
-                       input_keypoints):
+                       input_keypoints,
+                       init_pred):
         
         def closure():
             optimizer.zero_grad()
 
-            output = smpl.forward_align(params[0], params[1], cam_intrinsics=self.cam_intrinsics, bbox=bbox, res=self.res, trans_opt=params[3], global_orient_opt=params[4])
-            joints3d = output.joints.reshape(*params[2].shape[:2], -1, 3)
+            output = smpl.forward_align(init_pred['pose'], init_pred['betas'], cam_intrinsics=self.cam_intrinsics, bbox=bbox, res=self.res, trans_opt=params[0], global_orient_opt=params[1], offset=True)
+            joints3d = output.joints.reshape(*init_pred['cam'].shape[:2], -1, 3)
 
             # get rotation and translation from extrinsics matrix
             rotation = self.gt_extrinsics[:, :, :3, :3]
@@ -102,7 +108,22 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 translation=translation,
             )
 
-            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, joints3d)
+            joints3d_cam = (rotation @ joints3d.transpose(-1, -2)).transpose(-1, -2)
+            joints3d_cam = joints3d_cam + translation.unsqueeze(-2)
+
+            trans_cam = convert_pare_to_full_img_cam(
+            init_pred['cam'], 
+            bbox[:, :, 2] * 200., 
+            bbox[:, :, :2], 
+            self.res[0], 
+            self.res[1], 
+            focal_length=self.cam_intrinsics[:, 0, 0])
+
+            # get joints in camera frame [0]
+            output = smpl.forward_align(init_pred['pose'], init_pred['betas'], trans_opt=trans_cam.squeeze(0), offset=False)
+            joints3d_cam_pred = output.joints
+
+            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joints3d_cam, joints3d_cam_pred)
             loss = sum(loss_dict.values())
             loss.backward()
             return loss

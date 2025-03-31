@@ -196,11 +196,8 @@ if __name__ == '__main__':
             wham_data_path = glob(os.path.join(sequence_root, "smplify_naive_intrinsics.pkl"))[0]
         else:
             wham_data_path = glob(os.path.join(sequence_root, "smplify.pkl"))[0]
-    elif args.run_baseline:
-        if args.use_gt_betas:
-            wham_data_path = glob(os.path.join(sequence_root, "baseline_gt_betas.pkl"))[0]
-        else:
-            wham_data_path = glob(os.path.join(sequence_root, "baseline.pkl"))[0]
+    elif args.baseline:
+        wham_data_path = glob(os.path.join(sequence_root, "baseline.pkl"))[0]
     else:
         wham_data_path = glob(os.path.join(sequence_root, "eval.pkl"))[0]
 
@@ -208,4 +205,4 @@ if __name__ == '__main__':
     smpl_align = build_body_model(cfg.DEVICE, smpl_batch_size)
 
     print("Align: ", wham_data_path)
-    align_and_compute_metrics(gt_data_path, wham_data_path, args, cfg, smpl_align)
+    align_and_compute_metrics(gt_data_path, wham_data_path, cfg)

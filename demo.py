@@ -32,7 +32,7 @@ from configs import constants as _C
 
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
-from lib.models.smplify.custom_smplify import progressive_global_translation_optimization
+from lib.models.smplify.custom_smplify import optimization_upper_bound, optimization_baseline, W_MPJPE_align
 
 from smplx import SMPL
 
@@ -40,7 +40,6 @@ from configs.config import get_cfg_defaults
 from configs.config import parse_args
 
 from scripts.align_emdb import align_and_compute_metrics
-from lib.models.smplify.custom_smplify import align
 from scripts.visualize_cam_path import invert_camera_poses
 
 
@@ -142,15 +141,21 @@ def run(cfg,
             gt_betas = torch.tensor(gt_betas).float().to(cfg.DEVICE)
             pred['betas'] = gt_betas
 
-    pred = align(gt_data_path, pred, kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
+    gt_extrinsics = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+
+    pred['trans_world'] = pred['trans_world'].squeeze(0)
+    pred['poses_root_world'] = pred['poses_root_world'].squeeze(0).unsqueeze(1)
+
+    pred = W_MPJPE_align(pred, kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
                 cfg.DEVICE, gt_extrinsics)
 
     if args.upper_bound:
-        kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+        # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+        kwargs["gt_extrinsics"] = gt_extrinsics
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
-        pred = progressive_global_translation_optimization(
+        pred = optimization_upper_bound(
             pred, input_keypoints, kwargs['bbox'],
-            kwargs['gt_extrinsics'], kwargs['cam_intrinsics'],
+            kwargs['gt_extrinsics'], gt_intrinsics,
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
 
     if args.run_smplify:
@@ -178,13 +183,22 @@ def run(cfg,
         dpvo_cam[:, :3, :3] = dpvo_orientation
         dpvo_cam[:, :3, 3] = dpvo_trans
         dpvo_extrinsics = invert_camera_poses(dpvo_cam)
+        dpvo_extrinsics = torch.tensor(dpvo_extrinsics).float().to(cfg.DEVICE)
+        #estimate scale
+        scale = 14.489
+
+        dpvo_extrinsics[:, :3, 3] *= float(scale)
+        dpvo_extrinsics = dpvo_extrinsics @ gt_extrinsics[0]
 
         kwargs["gt_extrinsics"] = torch.tensor(dpvo_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+        # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
-        pred = progressive_global_translation_optimization(
+        pred_align = pred.copy()
+        pred = optimization_baseline(
             pred, input_keypoints, kwargs['bbox'],
-            kwargs['gt_extrinsics'], kwargs['cam_intrinsics'],
+            kwargs['gt_extrinsics'], gt_intrinsics,
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
+        results['trans_world_align'] = pred_align['trans_world'].cpu().squeeze(0).numpy()
 
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
@@ -202,6 +216,7 @@ def run(cfg,
     results['pose_world'] = pred_pose_world
 
     results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
+
     # results['trans_world'] = trans_world
 
     results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
