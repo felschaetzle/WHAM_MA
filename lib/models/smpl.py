@@ -50,6 +50,7 @@ class SMPL(_SMPL):
         
         rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(*pred_rot6d.shape[:2], -1, 6)
         ).reshape(-1, 24, 3, 3)
+
         kwargs['transl'] = trans_opt
         if global_orient_opt is None:
             output = self.get_output(body_pose=rotmat[:, 1:],
@@ -63,6 +64,10 @@ class SMPL(_SMPL):
             return output
         
         elif global_orient_opt is not None:
+            if global_orient_opt.shape[-1] == 6:
+                global_orient_opt = transforms.rotation_6d_to_matrix(
+                    global_orient_opt.reshape(*global_orient_opt.shape[:2], -1, 6)
+                ).reshape(-1, 1, 3, 3)
             output = self.get_output(body_pose=rotmat[:, 1:],
                                  global_orient=global_orient_opt,
                                  betas=betas.view(-1, 10),

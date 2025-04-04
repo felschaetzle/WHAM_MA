@@ -32,29 +32,26 @@ class CustomSMPLify():
         self.device = device
         self.res = res
 
-    def fit(self, init_pred, keypoints, bbox, gt_extrinsics, cam_intrinsics):
+    def fit(self, init_pred, keypoints, bbox, extrinsics, cam_intrinsics):
         
         def to_params(param):
             return param.requires_grad_(True)
-        
-        # pose = init_pred['pose']
-        # betas = init_pred['betas']
-        # cam = init_pred['cam']
+    
 
-        transl_world = init_pred['trans_world']
-        poses_root_world = init_pred['poses_root_world']
+        pose = init_pred['pose'].clone()
+        transl_world = init_pred['trans_world'].clone()
+        poses_root_world = init_pred['poses_root_world'].clone()
         
-        # Stage 1. Optimize translation
-        # params = [to_params(pose), betas, cam, to_params(transl_world), to_params(poses_root_world)]
-        params = [to_params(transl_world), to_params(poses_root_world)]
-        
+
+        params = [to_params(transl_world), to_params(poses_root_world), to_params(pose)]
+        optim_params = [params[0], params[2]]
         optimizer = torch.optim.LBFGS(
-            params, 
+            optim_params, 
             lr=self.lr, 
             max_iter=self.num_iters, 
             line_search_fn='strong_wolfe')
         
-        loss_fn = CustomSMPLifyLoss(self.res, cam_intrinsics, init_pose=init_pred['pose'], device=self.device, gt_extrinsics=gt_extrinsics)
+        loss_fn = CustomSMPLifyLoss(self.res, cam_intrinsics, init_pose=init_pred['pose'], device=self.device, extrinsics=extrinsics)
         
         closure = loss_fn.create_closure(optimizer,
                     self.smpl, 
@@ -75,6 +72,7 @@ class CustomSMPLify():
 
         init_pred['trans_world'] = params[0].detach()
         init_pred['poses_root_world'] = params[1].squeeze(1).detach()
+        init_pred['pose'] = params[2].detach()
         
         return init_pred
     
@@ -148,47 +146,66 @@ def optimization_upper_bound(init_pred, keypoints, bbox,
     """
 
     # Create an instance of CustomSMPLify
-    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=10, res=res, device=device)
+    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=50, res=res, device=device)
     
-    window_size = 100
+    window_size = 30
+    window_step = window_size
     # get transl and root_pose in gt world frame
-    init_pred = W_MPJPE_align_sequentially(init_pred, bbox, res, cam_intrinsics, smpl, device, gt_extrinsics, window_size)
+    # init_pred = W_MPJPE_align(init_pred, bbox, res, cam_intrinsics, smpl, device, gt_extrinsics, window_size)
+
+    # init_pred['poses_root_world'] = matrix_to_rotation_6d(init_pred['poses_root_world'])
+    gt = joblib.load("/mnt/hdd/emdb_dataset/P9/80_outdoor_walk_big_circle/P9_80_outdoor_walk_big_circle_data.pkl")
+    root_pose = gt['smpl']['poses_root']
+    init_pred['poses_root_world'] = axis_angle_to_matrix(torch.from_numpy(root_pose).float()).unsqueeze(1).to(device)
+
+    p = axis_angle_to_matrix(torch.from_numpy(gt["smpl"]["poses_body"]).float().reshape(-1, 23, 3))
+    p = matrix_to_rotation_6d(p)
+    init_pred['pose'][0,:,6:] = p.reshape(-1,23*6).to(device)
+
 
     # Copy the initial predictions to update them progressively.
     current_pred = {k: v.clone() for k, v in init_pred.items()}
     
     # window_size = length - 1
 
-    for window in range(window_size, length, window_size):
-        if window + window_size >= length:
-            window = length
-            # custom_smplify.num_steps *= 2
-        print(f"\n===== Optimizing frames 1-{window} =====")
+    for window_end in range(window_size, length, window_step):
+        if window_end > 0:
+            break
+        if window_end + window_step >= length:
+            window_end = length
+
+            custom_smplify.num_steps *= 2
+        window_start = 0#window_end - window_size
+        
+        print(f"\n===== Optimizing frames {window_start}-{window_end} =====")
         # Slice the data for the current window.
         pred_window = {}
-        pred_window['cam'] = current_pred['cam'][:,:window,:]
-        pred_window['pose'] = current_pred['pose'][:,:window,:]
-        pred_window['betas'] = current_pred['betas'][:,:window,:]
+        pred_window['cam'] = current_pred['cam'][:,window_start:window_end,:].clone()
+        pred_window['pose'] = current_pred['pose'][:,window_start:window_end,:].clone()
+        pred_window['betas'] = current_pred['betas'][:,window_start:window_end,:].clone()
         
-        pred_window['trans_world'] = current_pred['trans_world'][:window,:]
-        pred_window['poses_root_world'] = current_pred['poses_root_world'][:window,:]
+        pred_window['trans_world'] = current_pred['trans_world'][window_start:window_end,:].clone()
+        pred_window['poses_root_world'] = current_pred['poses_root_world'][window_start:window_end,:].clone()
 
-        keypoints_window = keypoints[:window]
-        bbox_window = bbox[:,:window,:]
-        gt_extrinsics_window = gt_extrinsics[:,:window,:,:]
+        keypoints_window = keypoints[window_start:window_end]
+        bbox_window = bbox[:,window_start:window_end,:]
+        gt_extrinsics_window = gt_extrinsics[:,window_start:window_end,:,:]
         
         # Run optimization on the current window.
         optimized_pred_window = custom_smplify.fit(
             pred_window,
             keypoints_window,
             bbox_window,
-            gt_extrinsics=gt_extrinsics_window,
+            extrinsics=gt_extrinsics_window,
             cam_intrinsics=cam_intrinsics
         )
 
         # Update the current predictions with the optimized values.
-        current_pred['trans_world'][:window,:] = optimized_pred_window['trans_world']
-        current_pred['poses_root_world'][:window,0,:,:] = optimized_pred_window['poses_root_world']
+        current_pred['trans_world'][window_start:window_end,:] = optimized_pred_window['trans_world']
+        current_pred['poses_root_world'][window_start:window_end,0,:,:] = optimized_pred_window['poses_root_world']
+        current_pred['pose'][0, window_start:window_end,:] = optimized_pred_window['pose']
+
+    # current_pred['poses_root_world'] = rotation_6d_to_matrix(current_pred['poses_root_world'])
 
     print('Optimization complete.')
 
@@ -307,7 +324,7 @@ def optimization_baseline(init_pred, keypoints, bbox,
             pred_window,
             keypoints_window,
             bbox_window,
-            gt_extrinsics=extrinsics_window,
+            extrinsics=extrinsics_window,
             cam_intrinsics=cam_intrinsics
         )
 
