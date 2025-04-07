@@ -48,11 +48,12 @@ class SMPL(_SMPL):
                 offset=True,
                 **kwargs):
         
-        rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(*pred_rot6d.shape[:2], -1, 6)
-        ).reshape(-1, 24, 3, 3)
+        rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(-1, 23, 6)
+        ).reshape(-1, 23, 3, 3)
 
         kwargs['transl'] = trans_opt
         if global_orient_opt is None:
+            print("CHECK SMPL FORWARD ALIGN @@@@@@@@@")
             output = self.get_output(body_pose=rotmat[:, 1:],
                                  global_orient=rotmat[:, :1],
                                  betas=betas.view(-1, 10),
@@ -68,7 +69,7 @@ class SMPL(_SMPL):
                 global_orient_opt = transforms.rotation_6d_to_matrix(
                     global_orient_opt.reshape(*global_orient_opt.shape[:2], -1, 6)
                 ).reshape(-1, 1, 3, 3)
-            output = self.get_output(body_pose=rotmat[:, 1:],
+            output = self.get_output(body_pose=rotmat,
                                  global_orient=global_orient_opt,
                                  betas=betas.view(-1, 10),
                                  pose2rot=False,

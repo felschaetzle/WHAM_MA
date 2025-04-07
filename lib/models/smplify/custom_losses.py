@@ -34,7 +34,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
     def __init__(self, 
                  res,
                  cam_intrinsics,
-                 init_pose, 
+                #  init_pose, 
                  device,
                  extrinsics=None,
                  **kwargs
@@ -45,13 +45,13 @@ class CustomSMPLifyLoss(torch.nn.Module):
         self.device = device
         self.res = res
         self.cam_intrinsics = cam_intrinsics
-        self.init_pose = init_pose
+        # self.init_pose = init_pose
         self.extrinsics = extrinsics
         
     def forward(self, joints_2d, params, input_keypoints, bbox, init_pred, joints3d_cam, joints3d_cam_pred,
-                reprojection_weight=1000., regularize_weight=60.0, 
+                reprojection_weight=100., regularize_weight=60.0, 
                 consistency_weight=10.0, sprior_weight=0.04, 
-                smooth_weight=0.2, sigma=100):
+                smooth_weight=200, sigma=100):
         
         scale = bbox[..., 2:].unsqueeze(-1) * 200.
 
@@ -62,7 +62,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         reprojection_error = ((reprojection_error * joints_conf) / scale).mean()
         
         # Loss 2. Regularization term
-        regularize_error = torch.linalg.norm(params[2] - self.init_pose, dim=-1).mean()
+        # regularize_error = torch.linalg.norm(params[2] - self.init_pose, dim=-1).mean()
         
         # Loss 3. Shape prior and consistency error
         consistency_error = init_pred['betas'].std(dim=1).mean()
@@ -74,7 +74,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         global_orient_diff = compute_jitter_custom(params[1].squeeze(1)).mean()
         # cam_diff = compute_jitter(cam).mean() # 0.0
         trans_diff = compute_jitter_custom(params[0]).mean() # translation in global coords
-        local_trans_diff = compute_jitter(joints3d_cam).mean() #  translation in local coords
+        # local_trans_diff = compute_jitter(joints3d_cam).mean() #  translation in local coords
 
         vel = params[0][1:,:] - params[0][:-1,:]  # velocity between frames
         vel_norm = torch.norm(vel, dim=-1)
@@ -83,7 +83,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         smooth_error = trans_diff + vel_loss + global_orient_diff#+ pose_diff
 
 
-        # local_trans_diff = gmof(joints3d_cam - joints3d_cam_pred, sigma).mean() #  translation in local coords
+        local_trans_diff = gmof(joints3d_cam - joints3d_cam_pred, sigma).mean() #  translation in local coords
 
 
           # Sum up losses
@@ -92,7 +92,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
             # 'regularize': regularize_weight * regularize_error,
             # 'shape': shape_error,
             'smooth': smooth_weight * smooth_error,
-            # 'local': local_trans_diff/10
+            # 'local': local_trans_diff * 100
         }
         
         return loss
@@ -134,7 +134,8 @@ class CustomSMPLifyLoss(torch.nn.Module):
             focal_length=self.cam_intrinsics[:, 0, 0])
 
             # get joints in camera frame [0]
-            output = smpl.forward_align(params[2], init_pred['betas'], trans_opt=trans_cam.squeeze(0), offset=False)
+            output = smpl.forward_align(params[2], init_pred['betas'], trans_opt=trans_cam.squeeze(0), 
+                                        global_orient_opt=init_pred['poses_root_cam'], offset=False)
             joints3d_cam_pred = output.joints
 
             loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joints3d_cam, joints3d_cam_pred)
