@@ -19,7 +19,7 @@ from lib.data.dataloader import setup_eval_dataloader
 from lib.utils.utils import prepare_batch
 
 from lib.utils.imutils import avg_preds
-from lib.utils.transforms import matrix_to_axis_angle
+from lib.utils.transforms import matrix_to_axis_angle, rotation_6d_to_matrix, matrix_to_rotation_6d
 from lib.models import build_network, build_body_model
 from lib.models.preproc.detector import DetectionModel
 from lib.models.preproc.extractor import FeatureExtractor
@@ -141,22 +141,6 @@ def run(cfg,
             gt_betas = torch.tensor(gt_betas).float().to(cfg.DEVICE)
             pred['betas'] = gt_betas
 
-    gt_extrinsics = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-
-    pred['trans_world'] = pred['trans_world'].squeeze(0)
-    pred['poses_root_world'] = pred['poses_root_world'].squeeze(0).unsqueeze(1)
-
-    pred = W_MPJPE_align(pred, kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
-                cfg.DEVICE, gt_extrinsics)
-
-    if args.upper_bound:
-        # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-        kwargs["gt_extrinsics"] = gt_extrinsics
-        input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
-        pred = optimization_upper_bound(
-            pred, input_keypoints, kwargs['bbox'],
-            kwargs['gt_extrinsics'], gt_intrinsics,
-            smpl, cfg.DEVICE, length, kwargs['res'][0,:])
 
     if args.run_smplify:
         smplify = TemporalSMPLify(smpl, img_w=width, img_h=height, device=cfg.DEVICE)
@@ -169,6 +153,64 @@ def run(cfg,
             network.pred_cam = pred['cam']
             output = network.forward_smpl(**kwargs)
             pred = network.refine_trajectory(output, cam_angvel, return_y_up=True)
+
+    gt_extrinsics = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+
+    pred['trans_world'] = pred['trans_world'].squeeze(0)
+    pred['poses_root_world'] = pred['poses_root_world'].squeeze(0).unsqueeze(1)
+    pred['poses_body'] = matrix_to_rotation_6d(pred['poses_body']).reshape(-1, 138)
+
+    pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+    pred_body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
+    pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
+    results['trans_world_raw'] = pred['trans_world'].cpu().squeeze(0).numpy()
+    results['pose_world_raw'] = pred_pose_world
+
+    if args.save_wham_output:
+        # save wham output and bbox and res
+        wham_results = {}
+
+        wham_results['trans_world'] = results['trans_world_raw']
+
+        wham_results['poses_body'] = pred['poses_body'].cpu().numpy()
+        wham_results['poses_root_world'] = pred['poses_root_world'].cpu().numpy()
+        wham_results['poses_root_cam'] = pred['poses_root_cam'].cpu().numpy()
+
+        wham_results['pose_world'] = pred_pose_world
+
+        wham_results['betas'] = pred['betas'].cpu().numpy()
+        wham_results['cam'] = pred['cam'].cpu().numpy()
+
+        wham_results['bbox'] = kwargs['bbox'].cpu().numpy()
+        wham_results['res'] = kwargs['res'].cpu().numpy()
+
+        if args.use_gt_betas:
+            pth = osp.join(output_pth, "wham_raw_output_gt_betas.pkl")
+        else:
+            pth = osp.join(output_pth, "wham_raw_output.pkl")
+        joblib.dump(wham_results, pth)
+        print("Save raw WHAM to ", pth)
+        return
+
+
+    pred = W_MPJPE_align(pred, kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
+                cfg.DEVICE, gt_extrinsics)
+
+    pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+    pred_body_pose_aligned = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
+
+    pred_pose_world_aligned = np.concatenate((pred_root_world_aligned, pred_body_pose_aligned), axis=-1)
+    results['trans_world_align'] = pred['trans_world'].cpu().squeeze(0).numpy()
+    results['pose_world_align'] = pred_pose_world_aligned
+
+    if args.upper_bound:
+        # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+        kwargs["gt_extrinsics"] = gt_extrinsics
+        input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
+        pred = optimization_upper_bound(
+            pred, input_keypoints, kwargs['bbox'],
+            kwargs['gt_extrinsics'], gt_intrinsics,
+            smpl, cfg.DEVICE, length, kwargs['res'][0,:])
     
     if args.baseline:
         dpvo_path = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/slam_results_gt_intrinsics.pth"
@@ -199,28 +241,27 @@ def run(cfg,
             kwargs['gt_extrinsics'], gt_intrinsics,
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
         results['trans_world_align'] = pred_align['trans_world'].cpu().squeeze(0).numpy()
-
+        pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+        results['pose_world_align'] = pred_root_world_aligned
     # ========= Store results ========= #
-    pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
-    pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
+    pred_body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
+    # pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
 
     pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-    # pred_root_world = matrix_to_axis_angle(root_pose_world.squeeze(0).unsqueeze(1)).cpu().numpy().reshape(-1, 3)
+    # pred_root_world = matrix_to_axis_angle(rotation_6d_to_matrix(pred['pose'].squeeze(0).reshape(-1, 24, 6)[:,0,:])).cpu().numpy()
 
-    pred_pose = np.concatenate((pred_root, pred_body_pose), axis=-1)
+    # pred_pose = np.concatenate((pred_root, pred_body_pose), axis=-1)
     pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
-    pred_trans = (pred['trans_cam'] - network.output.offset).cpu().numpy()
+    # pred_trans = (pred['trans_cam'] - network.output.offset).cpu().numpy()
 
-    results['pose'] = pred_pose
-    results['trans'] = pred_trans
+    # results['pose'] = pred_pose
+    # results['trans'] = pred_trans
     results['pose_world'] = pred_pose_world
 
     results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
 
-    # results['trans_world'] = trans_world
-
     results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
-    results['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
+    # results['verts'] = (pred['verts_cam'] + pred['trans_cam'].unsqueeze(1)).cpu().numpy()
     results['bbox'] = kwargs['bbox'].cpu().numpy()
     results['cam'] = pred['cam'].cpu().numpy()
     results['res'] = kwargs['res'][0].cpu().numpy()

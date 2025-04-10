@@ -129,16 +129,19 @@ def parse_args(test=False):
     parser.add_argument('--run_smplify', action='store_true', default=False,
                         help='Run Temporal SMPLify for post processing')
     
-    parser.add_argument('--upper_bound', action='store_true', default=True,
+    parser.add_argument('--upper_bound', action='store_true', default=False,
                         help='Run Global Temporal SMPLify for post processing')
     
     parser.add_argument('--baseline', action='store_true', default=False,
                         help='Run baseline')
     
-    parser.add_argument('--use_gt_betas', action='store_true', default=True,
+    parser.add_argument('--use_gt_betas', action='store_true', default=False,
                         help='Use ground truth betas for evaluation')
 
     parser.add_argument("--naive_intrinsics", action='store_true', default=False)
+
+    parser.add_argument('--save_wham_output', action='store_true', default=True)
+
 
     args = parser.parse_args()
     # print(args, end='\n\n')

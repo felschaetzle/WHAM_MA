@@ -73,7 +73,7 @@ def align_and_compute_metrics(gt_pth, wham_pth, cfg):
     pred_pose_world = wham["pose_world"][:, :3]
     body_pose = wham["pose_world"][:, 3:]
     betas = wham["betas"]
-    root_cam = wham["pose"][:, :3]
+    root_cam = wham["poses_root_cam"][:, :3]
 
     pred_pose_world = R.from_rotvec(pred_pose_world).as_matrix()
     body_pose = np.reshape(body_pose, (-1, 23, 3))
@@ -83,12 +83,12 @@ def align_and_compute_metrics(gt_pth, wham_pth, cfg):
     root_cam = transforms.axis_angle_to_matrix(tt(root_cam))
 
     # Predicted local motion
-    pred_cam = smpl['neutral'](body_pose=body_pose, global_orient=root_cam.unsqueeze(1), betas=tt(betas), pose2rot=False)
+    pred_cam = smpl[gender](body_pose=body_pose, global_orient=root_cam.unsqueeze(1), betas=tt(betas), pose2rot=False)
     pred_verts_cam = pred_cam.vertices
     pred_j3d_cam = pred_cam.joints[:, :24]
 
     # Predicted global motion
-    pred_glob = smpl['neutral'](body_pose=body_pose, global_orient=tt(pred_pose_world).unsqueeze(1), betas=tt(betas), transl=tt(pred_trans_world), pose2rot=False)
+    pred_glob = smpl[gender](body_pose=body_pose, global_orient=tt(pred_pose_world).unsqueeze(1), betas=tt(betas), transl=tt(pred_trans_world), pose2rot=False)
     pred_j3d_glob = pred_glob.joints[:, :24]
     
     gt_trans_world = torch.from_numpy(gt_trans_world)
@@ -127,7 +127,7 @@ def align_and_compute_metrics(gt_pth, wham_pth, cfg):
     w_mpjpe = np.concatenate(w_mpjpe) * m2mm
     wa_mpjpe = np.concatenate(wa_mpjpe) * m2mm
 
-    # print("W-MPJPE: ", w_mpjpe.mean())
+    print("W-MPJPE: ", w_mpjpe.mean())
     print("WA-MPJPE: ", wa_mpjpe.mean())
 
     # trans_hat, rot = compute_pred_trans_hat(gt_trans_world, pred_trans_world)

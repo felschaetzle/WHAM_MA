@@ -18,13 +18,13 @@ from configs import constants as _C
 
 from scipy.spatial.transform import Rotation as R
 from lib.models.smplify.custom_smplify import optimization_upper_bound, optimization_baseline, W_MPJPE_align
-
+from lib.eval.eval_utils import align_pcl
 
 from configs.config import get_cfg_defaults
 from configs.config import parse_args
 
 from scripts.align_emdb import align_and_compute_metrics
-from scripts.visualize_cam_path import invert_camera_poses
+from scripts.visualize_cam_path import invert_camera_poses, get_camera_position
 
 
 def run(cfg,
@@ -73,7 +73,11 @@ def run(cfg,
     gt_extrinsics = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
 
 
-    wham_raw = joblib.load(_C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/wham_raw_output.pkl")
+
+    if args.use_gt_betas:
+        wham_raw = joblib.load(_C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/wham_raw_output_gt_betas.pkl")
+    else:
+        wham_raw = joblib.load(_C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/wham_raw_output.pkl")
     pred = {}
     
     pred['trans_world'] = torch.from_numpy(wham_raw['trans_world']).float().to(cfg.DEVICE)
@@ -92,6 +96,10 @@ def run(cfg,
     kwargs['bbox'] = bbox
     kwargs['res'] = res
 
+
+    if not args.use_gt_betas:
+        # Average betas
+        pred['betas'] = torch.mean(pred['betas'], dim=1, keepdim=True).repeat(1, pred['betas'].shape[1], 1)
 
     pred = W_MPJPE_align(pred, kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
                 cfg.DEVICE, gt_extrinsics)
@@ -125,32 +133,47 @@ def run(cfg,
         dpvo_cam[:, :3, :3] = dpvo_orientation
         dpvo_cam[:, :3, 3] = dpvo_trans
         dpvo_extrinsics = invert_camera_poses(dpvo_cam)
-        dpvo_extrinsics = torch.tensor(dpvo_extrinsics).float().to(cfg.DEVICE)
+        dpvo_extrinsics = torch.from_numpy(dpvo_extrinsics).float().to(cfg.DEVICE)
+
+
         #estimate scale
-        scale = 14.489
+        # scale = 14.489 # P8 90
+        results['dpvo_extrinsics_unscaled'] = dpvo_extrinsics.clone()
+        aux_dpvo = dpvo_extrinsics @ gt_extrinsics[0,0]
+        aux_dpvo_cam_pose = get_camera_position(aux_dpvo.cpu())
 
+
+        scale, _, _ = align_pcl(pred['trans_world'].unsqueeze(0).cpu(), aux_dpvo_cam_pose[gt_data['good_frames_mask']].unsqueeze(0))
+        print(scale)
         dpvo_extrinsics[:, :3, 3] *= float(scale)
-        dpvo_extrinsics = dpvo_extrinsics @ gt_extrinsics[0]
+        dpvo_extrinsics = dpvo_extrinsics @ gt_extrinsics[0,0]
 
-        kwargs["gt_extrinsics"] = torch.tensor(dpvo_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-        # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
+        results['dpvo_extrinsics'] = dpvo_extrinsics.clone().cpu().numpy()
+
+        kwargs["gt_extrinsics"] = dpvo_extrinsics.unsqueeze(0)
+        
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
-        pred_align = pred.copy()
+        
         pred = optimization_baseline(
             pred, input_keypoints, kwargs['bbox'],
             kwargs['gt_extrinsics'], gt_intrinsics,
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
-        results['trans_world_align'] = pred_align['trans_world'].cpu().squeeze(0).numpy()
-        pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-        results['pose_world_align'] = pred_root_world_aligned
+        
+        # results['dpvo_extrinsics'] = dpvo_extrinsics.cpu().numpy()
+        results['dpvo_scale'] = scale
+        # results['trans_world_align'] = pred_align['trans_world'].cpu().squeeze(0).numpy()
+        # pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+        # results['pose_world_align'] = pred_root_world_aligned
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
 
     pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
 
     pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
+    pred_pose_cam = matrix_to_axis_angle(pred['poses_root_cam'].squeeze(1)).cpu().numpy().reshape(-1, 3)
 
     results['pose_world'] = pred_pose_world
+    results['poses_root_cam'] = pred_pose_cam
     results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
     results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
     results['bbox'] = kwargs['bbox'].cpu().numpy()
@@ -159,11 +182,17 @@ def run(cfg,
     
 
     if args.upper_bound:
-        pth = osp.join(output_pth, "upper_bound.pkl")
+        if args.use_gt_betas:
+            pth = osp.join(output_pth, "upper_bound_gt_betas.pkl")
+        else:
+            pth = osp.join(output_pth, "upper_bound.pkl")
         joblib.dump(results, pth)
         print("Save results to ", pth)
     elif args.baseline:
-        pth = osp.join(output_pth, "baseline.pkl")
+        if args.use_gt_betas:
+            pth = osp.join(output_pth, "baseline_gt_betas.pkl")
+        else:
+            pth = osp.join(output_pth, "baseline.pkl")
         joblib.dump(results, pth)
         print("Save results to ", pth)
     else:
@@ -171,7 +200,7 @@ def run(cfg,
         joblib.dump(results, pth)
         print("Save results to ", pth)
 
-    # align_and_compute_metrics(gt_data_path, pth, cfg)
+    align_and_compute_metrics(gt_data_path, pth, cfg)
 
 if __name__ == '__main__':
     cfg, cfg_file, args = parse_args(test=True)

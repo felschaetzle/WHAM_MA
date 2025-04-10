@@ -19,6 +19,10 @@ def execute_demo(sub_id, seq_id, args=None):
 		if args is not None:
 			command.extend(args)
 
+
+		# Execute the command
+		print("Executing command:", " ".join(command))
+
 		result = subprocess.run(command)
 
 		# Print the output and error (if any)
@@ -28,11 +32,11 @@ def execute_demo(sub_id, seq_id, args=None):
 		print(f"Error running demo.py")
 		print(e.stderr)
 
-def execute_align(sub_id, seq_id, args=None):
+def execute_optimize(sub_id, seq_id, args=None):
 	try:
 		command = [
 			"python", 
-			"scripts/align_emdb.py", 
+			"optimize_wham.py", 
 			"--subject",
 			sub_id,
 			"--sequence",
@@ -46,13 +50,12 @@ def execute_align(sub_id, seq_id, args=None):
 		print("Output:\n", result.stdout)
 
 	except subprocess.CalledProcessError as e:
-		print(f"Error running align.py")
+		print(f"Error running demo.py")
 		print(e.stderr)
-
 def main():
 	subdirectories = glob(f"{DATASET_DIR}/*/*/")
 	subdirectories = sorted(subdirectories)
-	emdb2 = joblib.load('dataset/parsed_data/emdb_1_vit.pth')
+	emdb2 = joblib.load('dataset/parsed_data/emdb_2_vit.pth')
 	# print(sorted(subdirectories))
 	for path in subdirectories:
 		relative_path = os.path.relpath(path, DATASET_DIR)  # Get relative path
@@ -72,12 +75,12 @@ def main():
 
 			print(subject_id, sequence_id)
 
-			execute_demo(subject_id, sequence_id)
-			# execute_demo(subject_id, sequence_id, ["--run_smplify", "--naive_intrinsics"])
-			# execute_demo(subject_id, sequence_id, ["--run_smplify"])
-			# execute_demo(subject_id, sequence_id, ["--run_baseline"])
-			# execute_demo(subject_id, sequence_id, ["--run_baseline", "--use_gt_betas"])
-
+			# execute_demo(subject_id, sequence_id)
+			# execute_demo(subject_id, sequence_id, ['--use_gt_betas'])
+			execute_optimize(subject_id, sequence_id, ["--baseline"])
+			execute_optimize(subject_id, sequence_id, ["--baseline", '--use_gt_betas'])
+			# execute_optimize(subject_id, sequence_id, ["--upper_bound"])
+			# execute_optimize(subject_id, sequence_id, ["--upper_bound", '--use_gt_betas'])
 		else:
 			print("FAIL!")
 
