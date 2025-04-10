@@ -42,6 +42,8 @@ from emdb_configuration import (
 from lib.eval.eval_utils import align_pcl
 from lib.utils.transforms import matrix_to_axis_angle, matrix_to_rotation_6d, rotation_6d_to_matrix, axis_angle_to_matrix
 
+from configs.config import parse_args
+
 def draw_kp2d(kp2d, bboxes=None):
     """Draw 2D keypoints and bounding boxes on the image with OpenCV."""
 
@@ -172,31 +174,42 @@ def main(args):
         color=(0.8, 0.2, 0.2, 1),
     )
 
+    if args.baseline:
+        method = "baseline_gt_betas.pkl"
+        print("Using baseline")
+    if args.upper_bound:
+        method = "upper_bound_gt_betas.pkl"
+        print("Using upper bound")
+    
+    if args.baseline and args.upper_bound or not args.baseline and not args.upper_bound:
+        raise ValueError("Please specify either baseline or upper_bound")
+    
+
     sequence_root_wham = get_sequence_root(args, gt=False)
     path = glob(os.path.join(sequence_root_wham, "baseline.pkl"))[0]
     output = joblib.load(path)
 
-    seq = SMPLSequence(
-        output["pose_world"][:,3:],
-        smpl_layer=smpl_layer,
-        poses_root=output["pose_world"][:,:3],
-        betas=output["betas"],
-        trans=output["trans_world"],
-        name="Upper Bound/ Baseline",
-        color = (0.8, 0.8, 0.2, 1),
-    )  
+    # seq = SMPLSequence(
+    #     output["pose_world"][:,3:],
+    #     smpl_layer=smpl_layer,
+    #     poses_root=output["pose_world"][:,:3],
+    #     betas=output["betas"],
+    #     trans=output["trans_world"],
+    #     name="Upper Bound/ Baseline",
+    #     color = (0.8, 0.8, 0.2, 1),
+    # )  
 
-    align_seq = SMPLSequence(
-        output["pose_world"][:,3:],
-        smpl_layer=smpl_layer,
-        poses_root=output["pose_world_align"][:,:3],
-        betas=output["betas"],
-        trans=output["trans_world_align"],
-        name="WHAM align",
-        color = (0.2, 0.8, 0.8, 1),
-    )    
+    # align_seq = SMPLSequence(
+    #     output["pose_world"][:,3:],
+    #     smpl_layer=smpl_layer,
+    #     poses_root=output["pose_world_align"][:,:3],
+    #     betas=output["betas"],
+    #     trans=output["trans_world_align"],
+    #     name="WHAM align",
+    #     color = (0.2, 0.8, 0.8, 1),
+    # )    
 
-    path = glob(os.path.join(sequence_root_wham, "baseline_gt_betas.pkl"))[0]
+    path = glob(os.path.join(sequence_root_wham, method))[0]
     output = joblib.load(path)
 
     beta_seq = SMPLSequence(
@@ -206,7 +219,7 @@ def main(args):
         betas=output["betas"],
         trans=output["trans_world"],
         name="Upper Bound/ Baseline GT Beta",
-        color = (0.8, 0.8, 0.2, 1),
+        color = (0.8, 0.5, 0.2, 1),
     )  
 
     align_beta_seq = SMPLSequence(
@@ -216,7 +229,7 @@ def main(args):
         betas=output["betas"],
         trans=output["trans_world_align"],
         name="WHAM align GT Beta",
-        color = (0.2, 0.8, 0.8, 1),
+        color = (0.2, 0.5, 0.8, 1),
     )    
 
     # dpvo_path = glob(os.path.join(sequence_root_wham, "slam_results_gt_intrinsics.pth"))[0]
@@ -253,32 +266,45 @@ def main(args):
     # Prepare the camera.
     intrinsics = np.repeat(intrinsics[np.newaxis, :, :], len(extrinsics), axis=0)
     
-    dpvo_extrinsics = output['dpvo_extrinsics_unscaled']
 
-    aux_dpvo = dpvo_extrinsics.cpu() @ extrinsics[0]
+    if args.baseline:
+        dpvo_extrinsics = output['dpvo_extrinsics_unscaled']
 
-    print("shape aux_dpvo", aux_dpvo.shape)
+        aux_dpvo = dpvo_extrinsics.cpu() @ extrinsics[0]
 
-    aux_dpvo_cam_pose = get_camera_position(aux_dpvo)
+        aux_dpvo_cam_pose = get_camera_position(aux_dpvo)
 
-    print("shape aux_dpvo_cam_pose", aux_dpvo_cam_pose.shape)
 
-    scale, _, _ = align_pcl(torch.from_numpy(output['trans_world_align']).float().unsqueeze(0).cpu(), 
-                            aux_dpvo_cam_pose[data['good_frames_mask']].unsqueeze(0).float())
-    print(scale)
-    dpvo_extrinsics[:, :3, 3] *= float(scale)
-    dpvo_extrinsics = dpvo_extrinsics.cpu() @ extrinsics[0]
+        scale, _, _ = align_pcl(torch.from_numpy(output['trans_world_align']).float().unsqueeze(0).cpu(), 
+                                aux_dpvo_cam_pose[data['good_frames_mask']].unsqueeze(0).float())
+        print(scale)
+        dpvo_extrinsics[:, :3, 3] *= float(scale)
+        dpvo_extrinsics = dpvo_extrinsics.cpu() @ extrinsics[0]
 
-    dpvo_extrinsics = dpvo_extrinsics.cpu().numpy()
-    print("shape should be same", dpvo_extrinsics.shape)
-    dpvo_extrinsics_ = output['dpvo_extrinsics']
-    print("shape should be same", dpvo_extrinsics.shape)
-    print('Saity diff', (dpvo_extrinsics - dpvo_extrinsics_).mean())
-    print('Scale diff', (scale - output['dpvo_scale']))
+        dpvo_extrinsics = dpvo_extrinsics.cpu().numpy()
+        # print("shape should be same", dpvo_extrinsics.shape)
+        dpvo_extrinsics_ = output['dpvo_extrinsics']
+        # print("shape should be same", dpvo_extrinsics.shape)
+        print('Saity diff', (dpvo_extrinsics - dpvo_extrinsics_).mean())
+        print('Scale diff', (scale - output['dpvo_scale']))
 
+        dpvo_camera = OpenCVCamera(intrinsics, dpvo_extrinsics[:,:3], cols, rows, viewer=viewer, name="DPVO Camera")
+
+
+        # Display the images on a billboard.
+        dpvo_images_bb = Billboard.from_camera_and_distance(
+            dpvo_camera,
+            10.0,
+            cols,
+            rows,
+            image_files,
+            image_process_fn=drawing_function(kp2d, bboxes),
+            name="Image DPVO",
+        )
+
+        viewer.scene.add(dpvo_images_bb, dpvo_camera)
 
     gt_camera = OpenCVCamera(intrinsics, extrinsics[:, :3], cols, rows, viewer=viewer, name="GT Camera")
-    dpvo_camera = OpenCVCamera(intrinsics, dpvo_extrinsics[:,:3], cols, rows, viewer=viewer, name="DPVO Camera")
 
     # Display the images on a billboard.
     raw_images_bb = Billboard.from_camera_and_distance(
@@ -292,19 +318,10 @@ def main(args):
     )
 
 
-    # Display the images on a billboard.
-    dpvo_images_bb = Billboard.from_camera_and_distance(
-        dpvo_camera,
-        10.0,
-        cols,
-        rows,
-        image_files,
-        image_process_fn=drawing_function(kp2d, bboxes),
-        name="Image DPVO",
-    )
+
 
     if not args.mini:
-        viewer.scene.add(raw_images_bb, dpvo_images_bb, gt_camera, dpvo_camera, gt_smpl_seq, seq, align_seq, beta_seq, align_beta_seq)
+        viewer.scene.add(raw_images_bb, gt_camera, gt_smpl_seq, beta_seq, align_beta_seq)
     else:
         pass
     if args.draw_trajectories:
@@ -318,21 +335,21 @@ def main(args):
             name="Trajectory: GT",
         )
 
-        path = LinesTrail(
-            seq.joints[:, 0],
-            r_base=0.003,
-            color=(0.2, 0.8, 0.2, 0.8),
-            cast_shadow=False,
-            name="Trajectory: Basline/Upper bound",
-        )
+        # path = LinesTrail(
+        #     seq.joints[:, 0],
+        #     r_base=0.003,
+        #     color=(0.2, 0.8, 0.2, 0.8),
+        #     cast_shadow=False,
+        #     name="Trajectory: Basline/Upper bound",
+        # )
 
-        align_path = LinesTrail(
-            align_seq.joints[:, 0],
-            r_base=0.003,
-            color=(0.2, 0.8, 0.2, 0.8),
-            cast_shadow=False,
-            name="Trajectory: Basline/U. b. align only",
-        )
+        # align_path = LinesTrail(
+        #     align_seq.joints[:, 0],
+        #     r_base=0.003,
+        #     color=(0.2, 0.8, 0.2, 0.8),
+        #     cast_shadow=False,
+        #     name="Trajectory: Basline/U. b. align only",
+        # )
 
 
         beta_path = LinesTrail(
@@ -361,23 +378,28 @@ def main(args):
             name="Camera Trajectory: GT",
         )
 
-        dpvo_pos = get_camera_position(dpvo_extrinsics)
-        dpvo_cam_path = LinesTrail(
-            dpvo_pos,
-            r_base=0.003,
-            color=(0.2, 0.8, 0.2, 1),
-            cast_shadow=False,
-            name="Camera Trajectory: DPVO",
-        )
+        if args.baseline:
 
+            dpvo_pos = get_camera_position(dpvo_extrinsics)
+            dpvo_cam_path = LinesTrail(
+                dpvo_pos,
+                r_base=0.003,
+                color=(0.2, 0.8, 0.2, 1),
+                cast_shadow=False,
+                name="Camera Trajectory: DPVO",
+            )
+            viewer.scene.add(dpvo_cam_path)
         if not args.mini:
-            viewer.scene.add(gt_camera_path, dpvo_cam_path, gt_path, path, align_path, beta_path, beta_align_path)
+            viewer.scene.add(gt_camera_path, gt_path, beta_path, beta_align_path)
         else:
             pass
     # Remaining viewer setup.
     if args.view_from_camera:
         # We view the scene through the camera.
-        viewer.set_temp_camera(dpvo_camera)
+        if args.baseline:
+            viewer.set_temp_camera(dpvo_camera)
+        else:
+            viewer.set_temp_camera(gt_camera)
     else:
         # We center the scene on the first frame of the SMPL sequence.
         pass
@@ -391,43 +413,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("--subject", type=str, default=_C.subject_id, help="The subject ID, P0 - P9.")
-    parser.add_argument(
-        "--sequence",
-        type=str,
-        default=_C.sequence_id,
-        help="The sequence ID. This can be any unambiguous prefix of the sequence's name, i.e. for the "
-        "sequence '66_outdoor_rom' it could be '66' or any longer prefix including the full name.",
-    )
-    parser.add_argument(
-        "--view_from_camera",
-        action="store_true",
-        help="View it from the camera's perspective.",
-        default=True
-    )
-    parser.add_argument(
-        "--draw_2d",
-        action="store_true",
-        help="Draw 2D keypoints and bounding boxes on the image.",
-    )
-    parser.add_argument(
-        "--draw_trajectories",
-        action="store_true",
-        help="Render SMPL and camera trajectories.",
-        default=True
-    )
-    parser.add_argument(
-        "--mini",
-        action='store_true',
-        default=False
-    )
-
-    parser.add_argument("--gt_camera", default=True, action='store_true', help="Use ground truth camera pose")
-
-
-    args = parser.parse_args()
+    cfg, cfg_files, args = parse_args(test=True)
 
     C.update_conf({"smplx_models": SMPLX_MODELS})
 

@@ -141,6 +141,29 @@ def parse_args(test=False):
     parser.add_argument("--naive_intrinsics", action='store_true', default=False)
 
     parser.add_argument('--save_wham_output', action='store_true', default=True)
+    
+    parser.add_argument(
+        "--view_from_camera",
+        action="store_true",
+        help="View it from the camera's perspective.",
+        default=True
+    )
+    parser.add_argument(
+        "--draw_2d",
+        action="store_true",
+        help="Draw 2D keypoints and bounding boxes on the image.",
+    )
+    parser.add_argument(
+        "--draw_trajectories",
+        action="store_true",
+        help="Render SMPL and camera trajectories.",
+        default=True
+    )
+    parser.add_argument(
+        "--mini",
+        action='store_true',
+        default=False
+    )
 
 
     args = parser.parse_args()
