@@ -108,7 +108,7 @@ def align_and_compute_metrics(gt_pth, wham_pth, cfg):
     # print("MPJPE: ", mpjpe.mean())
 
     # <======= Evaluation on the global motion
-    chunk_length = 100
+    chunk_length = 1000
     w_mpjpe, wa_mpjpe = [], []
     for start in range(0, masks.sum(), chunk_length):
         end = min(masks.sum(), start + chunk_length)

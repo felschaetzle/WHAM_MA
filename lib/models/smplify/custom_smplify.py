@@ -33,7 +33,7 @@ class CustomSMPLify():
         self.res = res
 
     def fit(self, init_pred, keypoints, bbox, extrinsics, cam_intrinsics):
-        
+        print("Fitting SMPL parameters...")
         def to_params(param):
             return param.requires_grad_(True)
     
@@ -42,14 +42,13 @@ class CustomSMPLify():
         transl_world = init_pred['trans_world'].clone()
         poses_root_world = init_pred['poses_root_world'].clone()
         
-
         params = [to_params(transl_world), to_params(poses_root_world), to_params(pose)]
-        optim_params = [params[0]]
+        # optim_params = [params[0]]
         optimizer = torch.optim.LBFGS(
-            optim_params, 
+            params, 
             lr=self.lr, 
-            max_iter=self.num_iters, 
-            line_search_fn='strong_wolfe')
+            max_iter=self.num_iters)#, 
+            # line_search_fn='strong_wolfe')
         
         loss_fn = CustomSMPLifyLoss(self.res, cam_intrinsics, device=self.device, extrinsics=extrinsics)
         
@@ -146,13 +145,58 @@ def optimization_upper_bound(init_pred, keypoints, bbox,
     """
 
     # Create an instance of CustomSMPLify
-    s = 20
+    s = 50
     custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=s, res=res, device=device)
     
-    window_size = 100
-    window_step = 10
+    # window_size = 100
+    # window_step = 10
     # get transl and root_pose in gt world frame
-    init_pred = W_MPJPE_align_sequentially(init_pred, bbox, res, cam_intrinsics, smpl, device, gt_extrinsics, window_size)
+    init_pred = W_MPJPE_align_sequentially(init_pred, bbox, res, cam_intrinsics, smpl, device, gt_extrinsics)
+
+    init_pred['trans_world_init'] = init_pred['trans_world'].clone()
+    init_pred['poses_root_world_init'] = init_pred['poses_root_world'].clone()
+    
+    # # Copy the initial predictions to update them progressively.
+    # current_pred = {k: v.clone() for k, v in init_pred.items()}
+    
+
+    # print("n===== Optimizing frames {window_start}-{window_end} =====")
+    # # Slice the data for the current window.
+    # pred_window = {}
+    # pred_window['cam'] = current_pred['cam'][:,:,:].clone()
+    # pred_window['poses_body'] = current_pred['poses_body'][:,:].clone()
+    # pred_window['betas'] = current_pred['betas'][:,:,:].clone()
+    
+    # pred_window['trans_world'] = current_pred['trans_world'][:,:].clone()
+    # pred_window['poses_root_world'] = current_pred['poses_root_world'][:,:].clone()
+    # pred_window['poses_root_cam'] = current_pred['poses_root_cam'][:,:].clone()
+
+    keypoints_window = keypoints[:]
+    bbox_window = bbox[:,:,:]
+    gt_extrinsics_window = gt_extrinsics[:,:,:,:]
+    
+    # Run optimization on the current window.
+    optimized_pred_window = custom_smplify.fit(
+        init_pred,
+        keypoints_window,
+        bbox_window,
+        extrinsics=gt_extrinsics_window,
+        cam_intrinsics=cam_intrinsics
+    )
+
+    # Update the current predictions with the optimized values.
+    # init_pred['trans_world'] = optimized_pred_window['trans_world']
+    # init_pred['poses_root_world'] = optimized_pred_window['poses_root_world']
+    # init_pred['poses_body'] = optimized_pred_window['poses_body']
+
+    # current_pred['poses_body'] = rotation_6d_to_matrix(current_pred['poses_body'].reshape(-1, 23, 6))
+
+    print('Optimization complete.')
+
+    return optimized_pred_window
+
+
+
 
     # gt = joblib.load("/mnt/hdd/emdb_dataset/P9/80_outdoor_walk_big_circle/P9_80_outdoor_walk_big_circle_data.pkl")
     # # gt = joblib.load("/mnt/hdd/emdb_dataset/P4/35_indoor_walk/P4_35_indoor_walk_data.pkl")
@@ -187,9 +231,8 @@ def optimization_upper_bound(init_pred, keypoints, bbox,
         window_start = max(0, window_start)
         if b:
             break
-        # if window_end % 100 == 0:
-        #     custom_smplify.num_steps *= 2
-        if (window_end >= length): # or window_end > 500:
+
+        if (window_end >= length):# or window_end > 600:
             # b = True
             window_end = length
 
@@ -233,23 +276,110 @@ def optimization_upper_bound(init_pred, keypoints, bbox,
     return current_pred
 
 
+def test(init_pred, keypoints, bbox, gt_extrinsics, cam_intrinsics,
+         smpl, device, length, res):
+    """
+    Optimize global translation progressively over increasing frame windows.
+    
+    Args:
+        init_pred: Dictionary of initial SMPL parameters (e.g., 'pose', 'betas', 'cam',
+                   'trans_world', 'poses_root_world') with shape [T, ...].
+        keypoints: Tensor of 2D keypoints [T, num_keypoints, 3] (last channel = confidence).
+        bbox: Tensor of bounding boxes per frame.
+        gt_extrinsics: Ground-truth extrinsics tensor [T, 4, 4] (or [T, 1, 4, 4]).
+        cam_intrinsics: Camera intrinsics tensor [T, 3, 3] (or [T, 1, 3, 3]).
+        smpl: Your SMPL model.
+        device: Torch device.
+        window_steps: List of frame counts for progressive optimization.
+        img_w, img_h: Image width and height.
+        
+    Returns:
+        current_pred: Dictionary with updated (optimized) parameters.
+        optimized_results: Dictionary mapping window size to the optimized parameters.
+    """
+
+    # Create an instance of CustomSMPLify
+    s = 50
+    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=s, res=res, device=device)
+    
+    # Copy the initial predictions to update them progressively.
+    current_pred = {k: v.clone() for k, v in init_pred.items()}
+    
+    # current_pred['trans_world'] = gt_extrinsics[]
+    rotation = gt_extrinsics[:, :, :3, :3].squeeze(0)
+    translation = gt_extrinsics[:, :, :3, 3].squeeze(0)
+
+    c = - rotation.mT @ translation[:,:, None]
+    current_pred['trans_world'] = c.squeeze(-1) + rotation[:,:,2] * 1
+
+    window_start = 0
+    window_end = 1500
+
+    print(f"\n===== Optimizing frames {window_start}-{window_end} =====")
+    # Slice the data for the current window.
+    pred_window = {}
+    pred_window['cam'] = current_pred['cam'][:,window_start:window_end,:].clone()
+    pred_window['poses_body'] = current_pred['poses_body'][window_start:window_end,:].clone()
+    pred_window['betas'] = current_pred['betas'][:,window_start:window_end,:].clone()
+    
+    pred_window['trans_world'] = current_pred['trans_world'][window_start:window_end,:].clone()
+    pred_window['poses_root_world'] = current_pred['poses_root_world'][window_start:window_end,:].clone()
+    pred_window['poses_root_cam'] = current_pred['poses_root_cam'][window_start:window_end,:].clone()
+
+    keypoints_window = keypoints[window_start:window_end]
+    bbox_window = bbox[:,window_start:window_end,:]
+    gt_extrinsics_window = gt_extrinsics[:,window_start:window_end,:,:]
+    
+    # Run optimization on the current window.
+    optimized_pred_window = custom_smplify.fit(
+        pred_window,
+        keypoints_window,
+        bbox_window,
+        extrinsics=gt_extrinsics_window,
+        cam_intrinsics=cam_intrinsics
+    )
+
+    # Update the current predictions with the optimized values.
+    current_pred['trans_world'][window_start:window_end] = optimized_pred_window['trans_world']
+    current_pred['poses_root_world'][window_start:window_end] = optimized_pred_window['poses_root_world']
+    current_pred['poses_body'][window_start:window_end] = optimized_pred_window['poses_body']
+
+    print('Optimization complete.')
+
+    return current_pred
+
+
 def optimization_baseline(init_pred, keypoints, bbox,
                                                   extrinsics, cam_intrinsics,
                                                   smpl, device,
                                                   length, res):
  
     # Create an instance of CustomSMPLify
-    s = 20
+    s = 50
     custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=s, res=res, device=device)
     
-    window_size = 100
-    window_step = 10
+    # window_size = 100
+    # window_step = 10
+
     # get transl and root_pose in gt world frame
-    init_pred = W_MPJPE_align_sequentially(init_pred, bbox, res, cam_intrinsics, smpl, device, extrinsics, window_size)
+    init_pred = W_MPJPE_align_sequentially(init_pred, bbox, res, cam_intrinsics, smpl, device, extrinsics)
+
+    init_pred['trans_world_init'] = init_pred['trans_world'].clone()
+    init_pred['poses_root_world_init'] = init_pred['poses_root_world'].clone()
 
     # Copy the initial predictions to update them progressively.
     current_pred = {k: v.clone() for k, v in init_pred.items()}
     
+    optimized_pred_window = custom_smplify.fit(
+        current_pred,
+        keypoints,
+        bbox,
+        extrinsics=extrinsics,
+        cam_intrinsics=cam_intrinsics
+    )
+    return optimized_pred_window
+
+
     # window_size = length - 1
     b = False
     for window_end in range(window_step, length + window_step, window_step):
@@ -280,14 +410,14 @@ def optimization_baseline(init_pred, keypoints, bbox,
 
         keypoints_window = keypoints[window_start:window_end]
         bbox_window = bbox[:,window_start:window_end,:]
-        gt_extrinsics_window = extrinsics[:,window_start:window_end,:,:]
+        extrinsics_window = extrinsics[:,window_start:window_end,:,:]
         
         # Run optimization on the current window.
         optimized_pred_window = custom_smplify.fit(
             pred_window,
             keypoints_window,
             bbox_window,
-            extrinsics=gt_extrinsics_window,
+            extrinsics=extrinsics_window,
             cam_intrinsics=cam_intrinsics
         )
 
@@ -301,57 +431,9 @@ def optimization_baseline(init_pred, keypoints, bbox,
     return current_pred
 
 
-    # Create an instance of CustomSMPLify
-    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=10, res=res, device=device)
-   
-    init_pred['trans_world'] = init_pred['trans_world']
-    init_pred['poses_root_world'] = init_pred['poses_root_world']
-    window_size = 100
-
-    # Copy the initial predictions to update them progressively.
-    current_pred = {k: v.clone() for k, v in init_pred.items()}
-    
-    # window_size = length - 1
-
-    for window in range(window_size, length, window_size):
-        # if window > 800:
-        #     break
-        if window + window_size >= length:
-            window = length
-            # custom_smplify.num_steps *= 2
-        print(f"\n===== Optimizing frames 1-{window} =====")
-        # Slice the data for the current window.
-        pred_window = {}
-        pred_window['cam'] = current_pred['cam'][:,:window,:]
-        pred_window['pose'] = current_pred['pose'][:,:window,:]
-        pred_window['betas'] = current_pred['betas'][:,:window,:]
-        
-        pred_window['trans_world'] = current_pred['trans_world'][:window,:]
-        pred_window['poses_root_world'] = current_pred['poses_root_world'][:window,:]
-
-        keypoints_window = keypoints[:window]
-        bbox_window = bbox[:,:window,:]
-        extrinsics_window = extrinsics[:,:window,:,:]
-        
-        # Run optimization on the current window.
-        optimized_pred_window = custom_smplify.fit(
-            pred_window,
-            keypoints_window,
-            bbox_window,
-            extrinsics=extrinsics_window,
-            cam_intrinsics=cam_intrinsics
-        )
-
-        # Update the current predictions with the optimized values.
-        current_pred['trans_world'][:window,:] = optimized_pred_window['trans_world']
-        current_pred['poses_root_world'][:window,0,:,:] = optimized_pred_window['poses_root_world']
-
-    print('Optimization complete.')
-
-    return current_pred
-
-def W_MPJPE_align_sequentially(pred, bbox, res, cam_intrinsics, smpl, device, extrinsics, window_size=20):
-    window_size = 20
+def W_MPJPE_align_sequentially(pred, bbox, res, cam_intrinsics, smpl, device, extrinsics, window_size=1):
+    # window_size = 20
+    print("Aligning joints sequentially, batch size: ", window_size)
     cam = pred['cam']
     pose = pred['poses_body']
     betas = pred['betas']
@@ -382,12 +464,12 @@ def W_MPJPE_align_sequentially(pred, bbox, res, cam_intrinsics, smpl, device, ex
             focal_length=cam_intrinsics[:, 0, 0])
 
         # get joints in camera frame [0]
-        output = smpl.forward_align(pose[window:window+1], betas[:,window:window+1], trans_opt=trans_cam[:,window:window+1].squeeze(0),
+        output = smpl.forward_align(pose[window:window+1], betas[window:window+1], trans_opt=trans_cam[:,window:window+1].squeeze(0),
                                     global_orient_opt=poses_root_cam[window:window+1], offset=False)
         joints3d_cam = output.joints.cpu()
 
         # get joints in world frame [0]
-        output = smpl.forward_align(pose[window:window+window_size], betas[:,window:window+window_size], 
+        output = smpl.forward_align(pose[window:window+window_size], betas[window:window+window_size], 
                                     trans_opt=transl_wham_world[window:window+window_size], 
                                     global_orient_opt=poses_root_wham_world[window:window+window_size], offset=True)
         joints3d_wham = output.joints.cpu()
@@ -421,7 +503,6 @@ def W_MPJPE_align_sequentially(pred, bbox, res, cam_intrinsics, smpl, device, ex
     pred["poses_root_world"] = poses_root_world
 
     return pred
-
 
 
 def W_MPJPE_align(pred, bbox, res, cam_intrinsics, smpl, device, extrinsics, window_size=None):
@@ -464,6 +545,9 @@ def W_MPJPE_align(pred, bbox, res, cam_intrinsics, smpl, device, extrinsics, win
     transl_cam = (R_wham_cam @ transl_wham.unsqueeze(-1)).squeeze(-1) + t_wham_cam
     transl_world = (R_cam_pose @ transl_cam.unsqueeze(-1)).squeeze(-1) + t_cam_pose
     poses_root_world = R_cam_pose @ R_wham_cam @ poses_root_wham
+
+    if "vel_root_world" in pred.keys():
+        pred["vel_root_world"] = (R_cam_pose @ R_wham_cam @ pred["vel_root_world"].unsqueeze(-1)).squeeze(-1).squeeze(0)
 
 
     wham_joints_world = torch.einsum("tij,tnj->tni", R_cam_pose, wham_joints_cam.to(device)) + t_cam_pose[:, None].to(device)

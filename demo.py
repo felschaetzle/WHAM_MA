@@ -49,7 +49,8 @@ def run(cfg,
         output_pth,
         network,
         save_pkl):
-    
+# def run(args,
+#         output_pth):
     cap = cv2.VideoCapture(video)
     assert cap.isOpened(), f'Faild to load video file {video}'
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -158,13 +159,16 @@ def run(cfg,
 
     pred['trans_world'] = pred['trans_world'].squeeze(0)
     pred['poses_root_world'] = pred['poses_root_world'].squeeze(0).unsqueeze(1)
-    pred['poses_body'] = matrix_to_rotation_6d(pred['poses_body']).reshape(-1, 138)
+    # pred['poses_body'] = matrix_to_rotation_6d(pred['poses_body']).reshape(-1, 138)
+    pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
 
     pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-    pred_body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
+    # pred_body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
     pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
     results['trans_world_raw'] = pred['trans_world'].cpu().squeeze(0).numpy()
     results['pose_world_raw'] = pred_pose_world
+
+    results['vel_root_refined'] = pred['vel_root_refined'].squeeze().cpu().numpy()
 
     if args.save_wham_output:
         # save wham output and bbox and res
@@ -174,15 +178,21 @@ def run(cfg,
 
         wham_results['poses_body'] = pred['poses_body'].cpu().numpy()
         wham_results['poses_root_world'] = pred['poses_root_world'].cpu().numpy()
-        wham_results['poses_root_cam'] = pred['poses_root_cam'].cpu().numpy()
+
+        pred_pose_cam = matrix_to_axis_angle(pred['poses_root_cam'].squeeze(1)).cpu().numpy().reshape(-1, 3)
+
+        wham_results['poses_root_cam'] = pred_pose_cam
 
         wham_results['pose_world'] = pred_pose_world
 
-        wham_results['betas'] = pred['betas'].cpu().numpy()
+        wham_results['betas'] = pred['betas'].squeeze().cpu().numpy()
         wham_results['cam'] = pred['cam'].cpu().numpy()
 
         wham_results['bbox'] = kwargs['bbox'].cpu().numpy()
         wham_results['res'] = kwargs['res'].cpu().numpy()
+        wham_results['vel_root_refined'] = pred['vel_root_refined'].squeeze().cpu().numpy()
+
+        wham_results['poses_root_r6d_refined'] = pred['poses_root_r6d_refined'].squeeze().cpu().numpy()
 
         if args.use_gt_betas:
             pth = osp.join(output_pth, "wham_raw_output_gt_betas.pkl")
@@ -190,59 +200,10 @@ def run(cfg,
             pth = osp.join(output_pth, "wham_raw_output.pkl")
         joblib.dump(wham_results, pth)
         print("Save raw WHAM to ", pth)
-        return
 
-
-    pred = W_MPJPE_align(pred, kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
-                cfg.DEVICE, gt_extrinsics)
-
-    pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-    pred_body_pose_aligned = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
-
-    pred_pose_world_aligned = np.concatenate((pred_root_world_aligned, pred_body_pose_aligned), axis=-1)
-    results['trans_world_align'] = pred['trans_world'].cpu().squeeze(0).numpy()
-    results['pose_world_align'] = pred_pose_world_aligned
-
-    if args.upper_bound:
-        # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-        kwargs["gt_extrinsics"] = gt_extrinsics
-        input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
-        pred = optimization_upper_bound(
-            pred, input_keypoints, kwargs['bbox'],
-            kwargs['gt_extrinsics'], gt_intrinsics,
-            smpl, cfg.DEVICE, length, kwargs['res'][0,:])
+        align_and_compute_metrics(gt_data_path, pth, cfg)
     
-    if args.baseline:
-        dpvo_path = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/slam_results_gt_intrinsics.pth"
-        dpvo_output = joblib.load(dpvo_path)
-        print(len(dpvo_output))
-        dpvo_orientation = R.from_quat(dpvo_output[:,3:]).as_matrix()
-        dpvo_trans = dpvo_output[:,:3]
-        # create dpvo_cam object
-
-        # Create 4x4 transformation matrices for dpvo_cam
-        dpvo_cam = np.eye(4)[None].repeat(len(dpvo_orientation), axis=0)
-        dpvo_cam[:, :3, :3] = dpvo_orientation
-        dpvo_cam[:, :3, 3] = dpvo_trans
-        dpvo_extrinsics = invert_camera_poses(dpvo_cam)
-        dpvo_extrinsics = torch.tensor(dpvo_extrinsics).float().to(cfg.DEVICE)
-        #estimate scale
-        scale = 14.489
-
-        dpvo_extrinsics[:, :3, 3] *= float(scale)
-        dpvo_extrinsics = dpvo_extrinsics @ gt_extrinsics[0]
-
-        kwargs["gt_extrinsics"] = torch.tensor(dpvo_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-        # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
-        input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
-        pred_align = pred.copy()
-        pred = optimization_baseline(
-            pred, input_keypoints, kwargs['bbox'],
-            kwargs['gt_extrinsics'], gt_intrinsics,
-            smpl, cfg.DEVICE, length, kwargs['res'][0,:])
-        results['trans_world_align'] = pred_align['trans_world'].cpu().squeeze(0).numpy()
-        pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-        results['pose_world_align'] = pred_root_world_aligned
+        return
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
     # pred_root = matrix_to_axis_angle(pred['poses_root_cam']).cpu().numpy().reshape(-1, 3)
@@ -295,6 +256,8 @@ def run(cfg,
             joblib.dump(results, pth)
             print("Save results to ", pth)
 
+    # pth = osp.join(output_pth, "wham_raw_output.pkl")
+
     align_and_compute_metrics(gt_data_path, pth, cfg)
 
 if __name__ == '__main__':
@@ -309,9 +272,9 @@ if __name__ == '__main__':
     sequence_root = get_sequence_root(args)
     video_path = glob(os.path.join(sequence_root, "*.mov"))[0]
 
-    # Output folder
+    # # Output folder
     sequence = args.subject + "_" + args.sequence
-    print(sequence)
+    # print(sequence)
     output_pth = osp.join(args.output_pth, sequence)
     os.makedirs(output_pth, exist_ok=True)
     
@@ -323,3 +286,6 @@ if __name__ == '__main__':
         args.save_pkl)
         
     logger.info('Done !')
+
+    # run(args,
+    #     output_pth)

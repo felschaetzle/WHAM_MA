@@ -48,8 +48,12 @@ class SMPL(_SMPL):
                 offset=True,
                 **kwargs):
         
-        rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(-1, 23, 6)
-        ).reshape(-1, 23, 3, 3)
+
+        if pred_rot6d.shape[-1] == 138:
+            rotmat = transforms.rotation_6d_to_matrix(pred_rot6d.reshape(-1, 23, 6)
+            ).reshape(-1, 23, 3, 3)
+        else:
+            rotmat = pred_rot6d
 
         kwargs['transl'] = trans_opt
         if global_orient_opt is None:

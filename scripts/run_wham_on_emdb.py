@@ -6,6 +6,31 @@ from custom_utils import find_substring
 # Set the path to the root directory of your dataset
 DATASET_DIR = "/mnt/hdd/emdb_dataset/"
 
+def execute_compute_metrics(sub_id, seq_id, args=None):
+	try:
+		command = [
+			"python", 
+			"compute_metrics.py", 
+			"--subject",
+			sub_id,
+			"--sequence",
+			seq_id]
+		if args is not None:
+			command.extend(args)
+
+
+		# Execute the command
+		print("Executing command:", " ".join(command))
+
+		result = subprocess.run(command)
+
+		# Print the output and error (if any)
+		print("Output:\n", result.stdout)
+
+	except subprocess.CalledProcessError as e:
+		print(f"Error running demo.py")
+		print(e.stderr)
+
 
 def execute_demo(sub_id, seq_id, args=None):
 	try:
@@ -77,10 +102,13 @@ def main():
 
 			# execute_demo(subject_id, sequence_id)
 			# execute_demo(subject_id, sequence_id, ['--use_gt_betas'])
-			execute_optimize(subject_id, sequence_id, ["--baseline"])
-			execute_optimize(subject_id, sequence_id, ["--baseline", '--use_gt_betas'])
+			# execute_optimize(subject_id, sequence_id, ["--baseline"])
+			# execute_optimize(subject_id, sequence_id, ["--baseline", '--use_gt_betas'])
 			# execute_optimize(subject_id, sequence_id, ["--upper_bound"])
 			# execute_optimize(subject_id, sequence_id, ["--upper_bound", '--use_gt_betas'])
+
+			execute_compute_metrics(subject_id, sequence_id)
+			execute_compute_metrics(subject_id, sequence_id, ["--baseline"])
 		else:
 			print("FAIL!")
 

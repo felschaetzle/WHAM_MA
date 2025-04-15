@@ -218,8 +218,8 @@ def main(args):
         poses_root=output["pose_world"][:,:3],
         betas=output["betas"],
         trans=output["trans_world"],
-        name="Upper Bound/ Baseline GT Beta",
-        color = (0.8, 0.5, 0.2, 1),
+        name="Upper Bound/ Baseline",
+        color = (0.2, 0.8, 0.8, 1),
     )  
 
     align_beta_seq = SMPLSequence(
@@ -228,21 +228,19 @@ def main(args):
         poses_root=output["pose_world_align"][:,:3],
         betas=output["betas"],
         trans=output["trans_world_align"],
-        name="WHAM align GT Beta",
-        color = (0.2, 0.5, 0.8, 1),
+        name="WHAM align GT",
+        color = (0.8, 0.2, 0.8, 1),
     )    
 
-    # dpvo_path = glob(os.path.join(sequence_root_wham, "slam_results_gt_intrinsics.pth"))[0]
-    # dpvo_output = joblib.load(dpvo_path)
-    # print(len(dpvo_output))
-  
-    # dpvo_orientation = R.from_quat(dpvo_output[:,3:]).as_matrix()
-    # dpvo_trans = dpvo_output[:,:3]
-
-    # # Create 4x4 transformation matrices for dpvo_cam
-    # dpvo_cam = np.eye(4)[None].repeat(len(dpvo_orientation), axis=0)
-    # dpvo_cam[:, :3, :3] = dpvo_orientation
-    # dpvo_cam[:, :3, 3] = dpvo_trans
+    init_beta_seq = SMPLSequence(
+        output["pose_world"][:,3:],
+        smpl_layer=smpl_layer,
+        poses_root=output["poses_root_world_init"][:,:3],
+        betas=output["betas"],
+        trans=output["trans_world_init"],
+        name="Init",
+        color = (0.8, 0.8, 0.5, 1),
+    )    
 
     # Create the viewer
     viewer_size = None
@@ -304,6 +302,24 @@ def main(args):
 
         viewer.scene.add(dpvo_images_bb, dpvo_camera)
 
+
+        wham_cam_extrinsics = output['wham_cam']
+        # wham_cam_extrinsics = np.linalg.inv(wham_cam_extrinsics)
+        print(wham_cam_extrinsics.shape, dpvo_extrinsics.shape)
+        # wham_camera = OpenCVCamera(intrinsics, wham_cam_extrinsics[:,:3], cols, rows, viewer=viewer, name="WHAM Camera")
+        
+        # wham_cam_bb = Billboard.from_camera_and_distance(
+        #     wham_camera,
+        #     10.0,
+        #     cols,
+        #     rows,
+        #     image_files,
+        #     image_process_fn=drawing_function(kp2d, bboxes),
+        #     name="Image WHAM",
+        # )
+        # viewer.scene.add(wham_cam_bb, wham_camera)
+        
+
     gt_camera = OpenCVCamera(intrinsics, extrinsics[:, :3], cols, rows, viewer=viewer, name="GT Camera")
 
     # Display the images on a billboard.
@@ -320,10 +336,11 @@ def main(args):
 
 
 
-    if not args.mini:
-        viewer.scene.add(raw_images_bb, gt_camera, gt_smpl_seq, beta_seq, align_beta_seq)
-    else:
-        pass
+    if args.upper_bound:
+        viewer.scene.add(raw_images_bb, gt_camera)
+        
+    viewer.scene.add(gt_smpl_seq, beta_seq, align_beta_seq, init_beta_seq)
+
     if args.draw_trajectories:
         # Add a path trail for the SMPL root trajectory.
         
@@ -355,20 +372,27 @@ def main(args):
         beta_path = LinesTrail(
             beta_seq.joints[:, 0],
             r_base=0.003,
-            color=(0.8, 0.8, 0.2, 0.8),
+            color=(0.2, 0.8, 0.8, 0.8),
             cast_shadow=False,
-            name="Trajectory: Basline/Upper bound GT Beta",
+            name="Trajectory: Basline/Upper bound",
         )
 
 
         beta_align_path = LinesTrail(
             align_beta_seq.joints[:, 0],
             r_base=0.003,
-            color=(0.8, 0.8, 0.2, 0.8),
+            color=(0.8, 0.2, 0.8, 0.8),
             cast_shadow=False,
-            name="Trajectory: Basline/U. b. align GT Beta",
+            name="Trajectory: Basline/U. b. align",
         )
 
+        beta_init_path = LinesTrail(
+            init_beta_seq.joints[:, 0],
+            r_base=0.003,
+            color=(0.8, 0.8, 0.5, 0.8),
+            cast_shadow=False,
+            name="Trajectory: Init",
+        )
         cam_pos = get_camera_position(extrinsics)
         gt_camera_path = LinesTrail(
             cam_pos,
@@ -377,9 +401,12 @@ def main(args):
             cast_shadow=False,
             name="Camera Trajectory: GT",
         )
+        if args.upper_bound:
+
+            viewer.scene.add(gt_camera_path)
+
 
         if args.baseline:
-
             dpvo_pos = get_camera_position(dpvo_extrinsics)
             dpvo_cam_path = LinesTrail(
                 dpvo_pos,
@@ -388,11 +415,21 @@ def main(args):
                 cast_shadow=False,
                 name="Camera Trajectory: DPVO",
             )
-            viewer.scene.add(dpvo_cam_path)
-        if not args.mini:
-            viewer.scene.add(gt_camera_path, gt_path, beta_path, beta_align_path)
-        else:
-            pass
+            wham_cam_pos = get_camera_position(wham_cam_extrinsics)
+            wham_cam_path = LinesTrail(
+                wham_cam_pos,
+                r_base=0.003,
+                color=(0.2, 0.2, 0.8, 1),
+                cast_shadow=False,
+                name="Camera Trajectory: WHAM",
+            )
+            viewer.scene.add(wham_cam_path)
+
+
+            viewer.scene.add(dpvo_cam_path, gt_camera_path)
+
+        viewer.scene.add(gt_path, beta_path, beta_align_path, beta_init_path)
+
     # Remaining viewer setup.
     if args.view_from_camera:
         # We view the scene through the camera.

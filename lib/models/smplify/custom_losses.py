@@ -6,10 +6,12 @@ from lib.models.smpl import convert_pare_to_full_img_cam
 import numpy as np
 import cv2
 
+from lib.utils.transforms import matrix_to_rotation_6d
+
 
 def gmof(x, sigma):
     """
-    Geman-McClure error function
+    Geman-McClure error function, cut off at sigma^2
     """
     x_squared = x ** 2
     sigma_squared = sigma ** 2
@@ -48,7 +50,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         # self.init_pose = init_pose
         self.extrinsics = extrinsics
         
-    def forward(self, joints_2d, params, input_keypoints, bbox, init_pred, joints3d_cam=None, joints3d_cam_pred=None,
+    def forward(self, joints_2d, params, input_keypoints, bbox, init_pred, joints3d_cam=None, joints3d_cam_pred=None, joints_2d_wham=None,
                 reprojection_weight=100., regularize_weight=60.0, 
                 consistency_weight=10.0, sprior_weight=0.04, 
                 smooth_weight=200, sigma=100):
@@ -60,9 +62,16 @@ class CustomSMPLifyLoss(torch.nn.Module):
         joints_conf = input_keypoints[..., -1:]
         reprojection_error = gmof(pred_keypoints - input_keypoints[..., :-1], sigma)
         reprojection_error = ((reprojection_error * joints_conf) / scale).mean()
+
+        # wham_pred_keypoints = joints_2d_wham[..., :17, :]
+        # wham_reprojection_error = gmof(wham_pred_keypoints - input_keypoints[..., :-1], sigma)
+        # wham_reprojection_error = ((wham_reprojection_error * joints_conf) / scale).mean() 
         
         # Loss 2. Regularization term
-        # regularize_error = torch.linalg.norm(params[2] - self.init_pose, dim=-1).mean()
+        pred_pose_6d = matrix_to_rotation_6d(params[2])
+        init_pred_pose_6d = matrix_to_rotation_6d(init_pred['poses_body'])
+        # regularize_error = torch.linalg.norm(params[2] - init_pred['poses_body'], dim=-1).mean()
+        regularize_error = torch.linalg.norm(pred_pose_6d-init_pred_pose_6d, dim=-1).mean()
         
         # Loss 3. Shape prior and consistency error
         consistency_error = init_pred['betas'].std(dim=1).mean()
@@ -70,17 +79,20 @@ class CustomSMPLifyLoss(torch.nn.Module):
         shape_error = sprior_weight * sprior_error + consistency_weight * consistency_error
         
         # Loss 4. Smooth loss
-        pose_diff = compute_jitter(params[2]).mean()
+        pose_diff = compute_jitter_custom(pred_pose_6d).mean()
         global_orient_diff = compute_jitter_custom(params[1].squeeze(1)).mean()
         # cam_diff = compute_jitter(cam).mean() # 0.0
         trans_diff = compute_jitter_custom(params[0]).mean() # translation in global coords
         # local_trans_diff = compute_jitter(joints3d_cam).mean() #  translation in local coords
 
-        vel = params[0][1:,:] - params[0][:-1,:]  # velocity between frames
-        vel_norm = torch.norm(vel, dim=-1)
-        vel_loss = vel_norm.mean()
 
-        smooth_error = trans_diff + vel_loss + global_orient_diff#+ pose_diff
+        # delta between frames
+        vel_pred = params[0][1:,:] - params[0][:-1,:] 
+        vel_wham = init_pred['vel_root_world']
+        vel = gmof(vel_pred - vel_wham[:-1], sigma)
+        vel_loss = vel.mean()
+
+        smooth_error = trans_diff + vel_loss + global_orient_diff + pose_diff
 
 
         local_trans_diff = gmof(joints3d_cam - joints3d_cam_pred, sigma).mean() #  translation in local coords
@@ -88,11 +100,12 @@ class CustomSMPLifyLoss(torch.nn.Module):
 
           # Sum up losses
         loss = {
-            'reprojection': reprojection_weight * reprojection_error,
+            'reprojection': reprojection_weight * (reprojection_error),# + 10*wham_reprojection_error),
             # 'regularize': regularize_weight * regularize_error,
             # 'shape': shape_error,
             'smooth': smooth_weight * smooth_error,
-            'local': local_trans_diff * 100
+            # 'local': local_trans_diff * 100
+            # 'velocity_diff_wham': vel_loss * 1000000,
         }
         
         return loss
@@ -122,23 +135,35 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 translation=translation,
             )
 
-            # joints3d_cam = (rotation @ joints3d.transpose(-1, -2)).transpose(-1, -2)
-            # joints3d_cam = joints3d_cam + translation.unsqueeze(-2)
+            # #WHAM keypoints
+            # rot_wham = init_pred['wham_cam'][:, :,:3,:3]
+            # trans_wham = init_pred['wham_cam'][:, :, :3, 3]
+            # wham_joints_2d = full_perspective_projection(
+            #     joints3d,
+            #     cam_intrinsics=self.cam_intrinsics,
+            #     rotation=rot_wham,
+            #     translation=trans_wham)
 
-            # trans_cam = convert_pare_to_full_img_cam(
-            # init_pred['cam'], 
-            # bbox[:, :, 2] * 200., 
-            # bbox[:, :, :2], 
-            # self.res[0], 
-            # self.res[1], 
-            # focal_length=self.cam_intrinsics[:, 0, 0])
 
-            # # get joints in camera frame [0]
-            # output = smpl.forward_align(params[2], init_pred['betas'], trans_opt=trans_cam.squeeze(0), 
-            #                             global_orient_opt=init_pred['poses_root_cam'], offset=False)
-            # joints3d_cam_pred = output.joints
 
-            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred)#, joints3d_cam, joints3d_cam_pred)
+
+            joints3d_cam = (rotation @ joints3d.transpose(-1, -2)).transpose(-1, -2)
+            joints3d_cam = joints3d_cam + translation.unsqueeze(-2)
+
+            trans_cam = convert_pare_to_full_img_cam(
+            init_pred['cam'], 
+            bbox[:, :, 2] * 200., 
+            bbox[:, :, :2], 
+            self.res[0], 
+            self.res[1], 
+            focal_length=self.cam_intrinsics[:, 0, 0])
+
+            # get joints in camera frame [0]
+            output = smpl.forward_align(params[2], init_pred['betas'], trans_opt=trans_cam.squeeze(0), 
+                                        global_orient_opt=init_pred['poses_root_cam'], offset=False)
+            joints3d_cam_pred = output.joints
+
+            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joints3d_cam, joints3d_cam_pred) #, wham_joints_2d)
             loss = sum(loss_dict.values())
             loss.backward()
             return loss

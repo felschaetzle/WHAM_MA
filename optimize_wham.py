@@ -10,14 +10,14 @@ import joblib
 import numpy as np
 from loguru import logger
 from lib.data.dataloader import setup_eval_dataloader
-from lib.utils.transforms import matrix_to_axis_angle, rotation_6d_to_matrix, matrix_to_rotation_6d
+from lib.utils.transforms import matrix_to_axis_angle, rotation_6d_to_matrix, matrix_to_rotation_6d, axis_angle_to_matrix
 from lib.models import build_body_model
 
 from scripts.custom_utils import get_sequence_root, find_substring
 from configs import constants as _C
 
 from scipy.spatial.transform import Rotation as R
-from lib.models.smplify.custom_smplify import optimization_upper_bound, optimization_baseline, W_MPJPE_align
+from lib.models.smplify.custom_smplify import optimization_upper_bound, optimization_baseline, W_MPJPE_align, test
 from lib.eval.eval_utils import align_pcl
 
 from configs.config import get_cfg_defaults
@@ -72,8 +72,6 @@ def run(cfg,
     results = defaultdict(dict)
     gt_extrinsics = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
 
-
-
     if args.use_gt_betas:
         wham_raw = joblib.load(_C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/wham_raw_output_gt_betas.pkl")
     else:
@@ -84,11 +82,41 @@ def run(cfg,
 
     pred['poses_body'] = torch.from_numpy(wham_raw['poses_body']).float().to(cfg.DEVICE)
     pred['poses_root_world'] = torch.from_numpy(wham_raw['poses_root_world']).float().to(cfg.DEVICE)
-    pred['poses_root_cam'] = torch.from_numpy(wham_raw['poses_root_cam']).float().to(cfg.DEVICE)
+
+    pose_world = torch.from_numpy(wham_raw['pose_world']).float().to(cfg.DEVICE)
+    pose_world = axis_angle_to_matrix(pose_world.reshape(-1, 24, 3))
+
+    pred['pose_body'] = pose_world[:, 1:, :, :]
+    pred['poses_root_world'] = pose_world[:, :1, :, :]
+
+    pose_root_cam = torch.from_numpy(wham_raw['poses_root_cam']).float().to(cfg.DEVICE)
+    pred['poses_root_cam'] = axis_angle_to_matrix(pose_root_cam).unsqueeze(1)
 
     pred['cam'] = torch.from_numpy(wham_raw['cam']).float().to(cfg.DEVICE)
     pred['betas'] = torch.from_numpy(wham_raw['betas']).float().to(cfg.DEVICE)
 
+    pred['vel_root'] = torch.from_numpy(wham_raw['vel_root_refined']).float().to(cfg.DEVICE)
+
+    pred['poses_root_ref'] = torch.from_numpy(wham_raw['poses_root_r6d_refined']).float().to(cfg.DEVICE)
+
+    root_r = pred['poses_root_ref'].unsqueeze(0).clone()
+    root_v = pred['vel_root'].unsqueeze(0).clone()
+    
+    # create root_v with shape (n,3) and values 0,0,1
+    # root_v = torch.zeros_like(root_v).float().to(cfg.DEVICE)
+    # root_v[:, 0] = 0.5
+    # root_v = root_v.reshape(-1, 3)
+
+    # from wham utils rollout_global_motion
+    root = rotation_6d_to_matrix(root_r[:])
+    vel_world = (root[:, :-1] @ root_v.unsqueeze(-1)).squeeze(-1)
+
+    yup2ydown = axis_angle_to_matrix(torch.tensor([[np.pi, 0, 0]])).float().to(cfg.DEVICE)
+
+    vel_world = (yup2ydown.mT @ vel_world.unsqueeze(-1)).squeeze(-1)
+    pred['vel_root_world'] = vel_world
+    # trans = torch.cumsum(vel_world, dim=1)
+    
     bbox = torch.from_numpy(wham_raw['bbox']).float().to(cfg.DEVICE)
     res = torch.from_numpy(wham_raw['res']).float().to(cfg.DEVICE)
 
@@ -105,7 +133,7 @@ def run(cfg,
                 cfg.DEVICE, gt_extrinsics)
 
     pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-    pred_body_pose_aligned = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
+    pred_body_pose_aligned = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
 
     pred_pose_world_aligned = np.concatenate((pred_root_world_aligned, pred_body_pose_aligned), axis=-1)
     results['trans_world_align'] = pred['trans_world'].cpu().squeeze(0).numpy()
@@ -117,13 +145,13 @@ def run(cfg,
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
         pred = optimization_upper_bound(
             pred, input_keypoints, kwargs['bbox'],
-            kwargs['gt_extrinsics'], gt_intrinsics,
+            gt_extrinsics[:,gt_data['good_frames_mask']], gt_intrinsics,
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
     
     if args.baseline:
         dpvo_path = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/slam_results_gt_intrinsics.pth"
         dpvo_output = joblib.load(dpvo_path)
-        print(len(dpvo_output))
+
         dpvo_orientation = R.from_quat(dpvo_output[:,3:]).as_matrix()
         dpvo_trans = dpvo_output[:,:3]
         # create dpvo_cam object
@@ -135,46 +163,114 @@ def run(cfg,
         dpvo_extrinsics = invert_camera_poses(dpvo_cam)
         dpvo_extrinsics = torch.from_numpy(dpvo_extrinsics).float().to(cfg.DEVICE)
 
-
         #estimate scale
         # scale = 14.489 # P8 90
         results['dpvo_extrinsics_unscaled'] = dpvo_extrinsics.clone()
         aux_dpvo = dpvo_extrinsics @ gt_extrinsics[0,0]
         aux_dpvo_cam_pose = get_camera_position(aux_dpvo.cpu())
 
-
         scale, _, _ = align_pcl(pred['trans_world'].unsqueeze(0).cpu(), aux_dpvo_cam_pose[gt_data['good_frames_mask']].unsqueeze(0))
-        print(scale)
+        print("DPVO scale: ", scale)
         dpvo_extrinsics[:, :3, 3] *= float(scale)
         dpvo_extrinsics = dpvo_extrinsics @ gt_extrinsics[0,0]
 
         results['dpvo_extrinsics'] = dpvo_extrinsics.clone().cpu().numpy()
-
-        kwargs["gt_extrinsics"] = dpvo_extrinsics.unsqueeze(0)
+        results['dpvo_scale'] = scale
+        dpvo_extrinsics = dpvo_extrinsics[gt_data['good_frames_mask']].unsqueeze(0)
         
+        print("Get WHAM CAM")
+
+        # Compute CAM from WHAM using intrinsics and 2d to 3d correspondence
+        output = smpl.forward_align(pred['poses_body'], pred['betas'], cam_intrinsics=gt_intrinsics, 
+                    bbox=bbox, res=kwargs['res'][:,0], trans_opt=pred['trans_world'], global_orient_opt=pred['poses_root_world'], offset=True)
+        joints_3d = output.joints.reshape(*pred['cam'].shape[:2], -1, 3).squeeze(0)[:,:17,:].clone().cpu().numpy()
+
+        intrins = gt_intrinsics.squeeze(0).cpu().numpy()
+
+
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
         
+        kp_2d = input_keypoints.clone().cpu().numpy()
+
+        kp_2d = np.ascontiguousarray(kp_2d.astype(np.float32))
+
+        dist_coeffs = np.zeros((4, 1), dtype=np.float32) 
+        WHAM_CAM = []
+        rvec_prev = gt_extrinsics.clone().squeeze()[0,:3, :3].cpu().numpy()
+        tvec_prev = gt_extrinsics.clone().squeeze()[0,:3, 3].cpu().numpy().reshape(3,1)
+        rvec_prev = cv2.Rodrigues(rvec_prev)[0]
+
+        conf_thresh = 0.5  # or your chosen threshold
+
+        for i in range(length):
+            pts_3d = joints_3d[i]
+            pts_2d_full = kp_2d[i]
+
+            conf = pts_2d_full[:, 2]
+            valid_mask = conf > conf_thresh
+
+            if valid_mask.sum() < 6:
+                print(f"[Frame {i}] Not enough valid keypoints ({valid_mask.sum()}) — skipping.")
+                continue
+
+            pts_3d_valid = np.ascontiguousarray(pts_3d[valid_mask].astype(np.float32))
+            pts_2d_valid = np.ascontiguousarray(pts_2d_full[valid_mask][:, :2].astype(np.float32))
+            K = np.ascontiguousarray(intrins.astype(np.float32))
+
+            # Use previous frame's result as initial guess, if available
+            if rvec_prev is not None and tvec_prev is not None:
+                success, rvec, tvec = cv2.solvePnP(
+                    pts_3d_valid, pts_2d_valid, K, dist_coeffs,
+                    rvec=rvec_prev, tvec=tvec_prev,
+                    useExtrinsicGuess=True,
+                    flags=cv2.SOLVEPNP_ITERATIVE
+                )
+            else:
+                success, rvec, tvec = cv2.solvePnP(
+                    pts_3d_valid, pts_2d_valid, K, dist_coeffs,
+                    flags=cv2.SOLVEPNP_ITERATIVE
+                )
+
+            if not success:
+                print(f"[Frame {i}] solvePnP failed.")
+                continue
+
+            rvec_prev = rvec.copy()
+            tvec_prev = tvec.copy()
+
+            R_new, _ = cv2.Rodrigues(rvec)
+            T = np.eye(4, dtype=np.float32)
+            T[:3, :3] = R_new
+            T[:3, 3] = tvec.squeeze()
+            WHAM_CAM.append(T)
+
+            # print(f"[Frame {i}] tvec: {tvec.ravel()}")
+        WHAM_CAM = np.array(WHAM_CAM)
+        wham_extrinsics = torch.from_numpy(WHAM_CAM).float().to(cfg.DEVICE).unsqueeze(0)
+        pred['wham_cam'] = wham_extrinsics
+        results['wham_cam'] = WHAM_CAM
+
         pred = optimization_baseline(
             pred, input_keypoints, kwargs['bbox'],
-            kwargs['gt_extrinsics'], gt_intrinsics,
+            dpvo_extrinsics, gt_intrinsics,
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
         
-        # results['dpvo_extrinsics'] = dpvo_extrinsics.cpu().numpy()
-        results['dpvo_scale'] = scale
-        # results['trans_world_align'] = pred_align['trans_world'].cpu().squeeze(0).numpy()
-        # pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-        # results['pose_world_align'] = pred_root_world_aligned
     # ========= Store results ========= #
-    pred_body_pose = matrix_to_axis_angle(rotation_6d_to_matrix(pred['poses_body'].reshape(-1,23,6))).cpu().numpy().reshape(-1, 69)
+    pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
 
     pred_root_world = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
 
     pred_pose_world = np.concatenate((pred_root_world, pred_body_pose), axis=-1)
     pred_pose_cam = matrix_to_axis_angle(pred['poses_root_cam'].squeeze(1)).cpu().numpy().reshape(-1, 3)
 
+    pred_root_world_init = matrix_to_axis_angle(pred['poses_root_world_init']).cpu().numpy().reshape(-1, 3)
+    results['poses_root_world_init'] = pred_root_world_init
+
+
     results['pose_world'] = pred_pose_world
     results['poses_root_cam'] = pred_pose_cam
     results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
+    results['trans_world_init'] = pred['trans_world_init'].cpu().squeeze(0).numpy()
     results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
     results['bbox'] = kwargs['bbox'].cpu().numpy()
     results['cam'] = pred['cam'].cpu().numpy()

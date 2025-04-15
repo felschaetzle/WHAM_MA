@@ -135,7 +135,7 @@ def parse_args(test=False):
     parser.add_argument('--baseline', action='store_true', default=False,
                         help='Run baseline')
     
-    parser.add_argument('--use_gt_betas', action='store_true', default=False,
+    parser.add_argument('--use_gt_betas', action='store_true', default=True,
                         help='Use ground truth betas for evaluation')
 
     parser.add_argument("--naive_intrinsics", action='store_true', default=False)
@@ -152,6 +152,7 @@ def parse_args(test=False):
         "--draw_2d",
         action="store_true",
         help="Draw 2D keypoints and bounding boxes on the image.",
+        default=True
     )
     parser.add_argument(
         "--draw_trajectories",

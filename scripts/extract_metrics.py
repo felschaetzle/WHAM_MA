@@ -7,7 +7,7 @@ emdb_seq = emdb["vid"]
 
 # Dictionary to store all results
 all_data = {}
-
+date = "15_4_25"
 
 if True:
     for elm in emdb_seq:
@@ -16,23 +16,23 @@ if True:
         
         files = {}
 
-        # wham_path = f"output/emdb2/{a}/wham_raw_output.pkl"
-        # files["WHAM"] = wham_path
+        wham_path = f"output/emdb2/{a}/wham_raw_output_gt_betas.pkl"
+        files["WHAM"] = wham_path
         # smplify_path = f"output/emdb2/{a}/smplify.pkl"
         # files["SMPLify"] = smplify_path
         # smplify_naive_path = f"output/emdb2/{a}/smplify_naive_intrinsics.pkl"
         # files["SMPLify naive intrinsics"] = smplify_naive_path
 
 
-        baseline_path = f"output/emdb2/{a}/baseline.pkl"
-        files["Baseline"] = baseline_path
+        # baseline_path = f"output/emdb2/{a}/baseline.pkl"
+        # files["Baseline"] = baseline_path
         baseline_beta_path = f"output/emdb2/{a}/baseline_gt_betas.pkl"
-        files["Baseline GT Betas"] = baseline_beta_path   
+        files["Baseline"] = baseline_beta_path   
 
-        upper_bound_path = f"output/emdb2/{a}/upper_bound.pkl"
-        files["Upper Bound"] = upper_bound_path
-        upper_bound_beta_path = f"output/emdb2/{a}/upper_bound_gt_betas.pkl"
-        files["Upper Bound GT Betas"] = upper_bound_beta_path 
+        # upper_bound_path = f"output/emdb2/{a}/upper_bound.pkl"
+        # files["Upper Bound"] = upper_bound_path
+        # upper_bound_beta_path = f"output/emdb2/{a}/upper_bound_gt_betas.pkl"
+        # files["Upper Bound"] = upper_bound_beta_path 
 
 
         # Store data in dictionary
@@ -50,7 +50,7 @@ if True:
                 }
 
     # Save all collected data into a single file
-    output_file = "output/emdb2/combined_metrics_9_4_25.pkl"
+    output_file = "output/emdb2/combined_metrics_" + date + ".pkl"
     joblib.dump(all_data, output_file)
 
     print(f"Data saved successfully to {output_file}")
@@ -84,7 +84,7 @@ df = pd.concat([df, pd.DataFrame([mean_row])])
 
 
 # Save the DataFrame to a csv file
-output_file = "output/emdb2/combined_metrics_9_4_25.csv"
+output_file = "output/emdb2/combined_metrics_" + date + ".csv"
 df.astype(float)
 df.to_csv(output_file, sep=',', decimal='.')
 print(f"Data saved successfully to {output_file}")
