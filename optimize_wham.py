@@ -149,35 +149,6 @@ def run(cfg,
             smpl, cfg.DEVICE, length, kwargs['res'][0,:])
     
     if args.baseline:
-        dpvo_path = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/slam_results_gt_intrinsics.pth"
-        dpvo_output = joblib.load(dpvo_path)
-
-        dpvo_orientation = R.from_quat(dpvo_output[:,3:]).as_matrix()
-        dpvo_trans = dpvo_output[:,:3]
-        # create dpvo_cam object
-
-        # Create 4x4 transformation matrices for dpvo_cam
-        dpvo_cam = np.eye(4)[None].repeat(len(dpvo_orientation), axis=0)
-        dpvo_cam[:, :3, :3] = dpvo_orientation
-        dpvo_cam[:, :3, 3] = dpvo_trans
-        dpvo_extrinsics = invert_camera_poses(dpvo_cam)
-        dpvo_extrinsics = torch.from_numpy(dpvo_extrinsics).float().to(cfg.DEVICE)
-
-        #estimate scale
-        # scale = 14.489 # P8 90
-        results['dpvo_extrinsics_unscaled'] = dpvo_extrinsics.clone()
-        aux_dpvo = dpvo_extrinsics @ gt_extrinsics[0,0]
-        aux_dpvo_cam_pose = get_camera_position(aux_dpvo.cpu())
-
-        scale, _, _ = align_pcl(pred['trans_world'].unsqueeze(0).cpu(), aux_dpvo_cam_pose[gt_data['good_frames_mask']].unsqueeze(0))
-        print("DPVO scale: ", scale)
-        dpvo_extrinsics[:, :3, 3] *= float(scale)
-        dpvo_extrinsics = dpvo_extrinsics @ gt_extrinsics[0,0]
-
-        results['dpvo_extrinsics'] = dpvo_extrinsics.clone().cpu().numpy()
-        results['dpvo_scale'] = scale
-        dpvo_extrinsics = dpvo_extrinsics[gt_data['good_frames_mask']].unsqueeze(0)
-        
         print("Get WHAM CAM")
 
         # Compute CAM from WHAM using intrinsics and 2d to 3d correspondence
@@ -249,6 +220,39 @@ def run(cfg,
         wham_extrinsics = torch.from_numpy(WHAM_CAM).float().to(cfg.DEVICE).unsqueeze(0)
         pred['wham_cam'] = wham_extrinsics
         results['wham_cam'] = WHAM_CAM
+
+
+        dpvo_path = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/slam_results_gt_intrinsics.pth"
+        dpvo_output = joblib.load(dpvo_path)
+
+        dpvo_orientation = R.from_quat(dpvo_output[:,3:]).as_matrix()
+        dpvo_trans = dpvo_output[:,:3]
+        # create dpvo_cam object
+
+        # Create 4x4 transformation matrices for dpvo_cam
+        dpvo_cam = np.eye(4)[None].repeat(len(dpvo_orientation), axis=0)
+        dpvo_cam[:, :3, :3] = dpvo_orientation
+        dpvo_cam[:, :3, 3] = dpvo_trans
+        dpvo_extrinsics = invert_camera_poses(dpvo_cam)
+        dpvo_extrinsics = torch.from_numpy(dpvo_extrinsics).float().to(cfg.DEVICE)
+
+        #estimate scale
+        # scale = 14.489 # P8 90
+        results['dpvo_extrinsics_unscaled'] = dpvo_extrinsics.clone()
+        aux_dpvo = dpvo_extrinsics @ gt_extrinsics[0,0]
+        aux_dpvo_cam_pose = get_camera_position(aux_dpvo.cpu())
+        aux_wham_cam_pose = get_camera_position(pred['wham_cam'].squeeze().cpu())
+
+        scale, _, _ = align_pcl(aux_wham_cam_pose.cpu(), aux_dpvo_cam_pose[gt_data['good_frames_mask']])
+        print("DPVO scale: ", scale)
+        dpvo_extrinsics[:, :3, 3] *= float(scale)
+        dpvo_extrinsics = dpvo_extrinsics @ gt_extrinsics[0,0]
+
+        results['dpvo_extrinsics'] = dpvo_extrinsics.clone().cpu().numpy()
+        results['dpvo_scale'] = scale
+        dpvo_extrinsics = dpvo_extrinsics[gt_data['good_frames_mask']].unsqueeze(0)
+        
+
 
         pred = optimization_baseline(
             pred, input_keypoints, kwargs['bbox'],

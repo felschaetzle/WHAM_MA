@@ -272,9 +272,11 @@ def main(args):
 
         aux_dpvo_cam_pose = get_camera_position(aux_dpvo)
 
+        wham_ext = torch.from_numpy(output['wham_cam'])
+        aux_wham_cam_pose = get_camera_position(wham_ext.squeeze().cpu())
 
-        scale, _, _ = align_pcl(torch.from_numpy(output['trans_world_align']).float().unsqueeze(0).cpu(), 
-                                aux_dpvo_cam_pose[data['good_frames_mask']].unsqueeze(0).float())
+        scale, _, _ = align_pcl(aux_wham_cam_pose, 
+                                aux_dpvo_cam_pose[data['good_frames_mask']].float())
         print(scale)
         dpvo_extrinsics[:, :3, 3] *= float(scale)
         dpvo_extrinsics = dpvo_extrinsics.cpu() @ extrinsics[0]

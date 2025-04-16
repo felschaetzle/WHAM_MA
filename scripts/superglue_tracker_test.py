@@ -17,10 +17,11 @@ import joblib
 import matplotlib.cm as cm
 from pathlib import Path
 import matplotlib.pyplot as plt
-from lib.models.utils import make_matching_plot_fast
+from lib.models.superglue_utils import make_matching_plot_fast
 from configs.config import parse_args
 
 from scripts.custom_utils import get_sequence_root
+import numpy as np
 
 def run(args):
     # Device config
@@ -46,6 +47,14 @@ def run(args):
 
     gt_data = joblib.load("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/P4_36_outdoor_long_walk_data.pkl")
     bbox = gt_data['bboxes']['bboxes']
+    gt_ext = gt_data['camera']['extrinsics']
+    K = gt_data['camera']['intrinsics'] 
+
+
+    wham_root = get_sequence_root(args, False)
+ 
+    baseline = joblib.load(wham_root+'/baseline_gt_betas.pkl')
+    dpvo_ext = baseline['dpvo_extrinsics']
 
 
     # Load and preprocess
@@ -79,6 +88,84 @@ def run(args):
         )
         mask &= ~inside
         return keypoints[mask], mask
+
+    def skew(t):
+        """Return the skew-symmetric matrix of a vector t."""
+        return np.array([
+            [0, -t[2], t[1]],
+            [t[2], 0, -t[0]],
+            [-t[1], t[0], 0]
+        ])
+    def get_fundamental_matrix(K, extrinsics_ref, extrinsics_frame):
+        """
+        Compute fundamental matrix from two extrinsics and intrinsics.
+
+        extrinsics: [4x4] matrices, world-to-camera (i.e., [R | t])
+        """
+        # Get camera-to-world to compute relative motion from 0 to 49
+        cam_to_world_ref = np.linalg.inv(extrinsics_ref)
+
+        # Relative transform from cam0 to cam49
+        rel_pose = extrinsics_frame @ cam_to_world_ref  # cam0 -> world -> cam49
+        R = rel_pose[:3, :3]
+        t = rel_pose[:3, 3]
+
+        # Compute fundamental matrix
+        t_skew = skew(t)
+        E = t_skew @ R  # Essential matrix
+        K_inv = np.linalg.inv(K)
+        F = K_inv.T @ E @ K_inv
+        return F/np.linalg.norm(F)
+
+    def compute_epipolar_line(F, x0):
+        """
+        Compute epipolar line in frame 49 for point x0 in frame 0.
+        Args:
+            F: Fundamental matrix (3x3)
+            x0: point in frame 0 in homogeneous coords [x, y, 1]
+        Returns:
+            l49: line coefficients (a, b, c) for ax + by + c = 0
+        """
+        x0_h = np.append(x0, 1)  # Make homogeneous: [x, y, 1]
+        l = F @ x0_h           # Epipolar line in frame 49
+        return l / np.linalg.norm(l[:2])  # Normalize (optional)
+
+    def draw_epipolar_line(image, l, color=(0, 255, 0), thickness=2):
+        a, b, c = l
+        h, w = image.shape[:2]
+
+        # Compute two endpoints of the line (at x=0 and x=w-1)
+        if np.abs(b) > 1e-5:
+            y0 = int((-c) / b)
+            y1 = int((-a * (w - 1) - c) / b)
+            pt1 = (0, y0)
+            pt2 = (w - 1, y1)
+        else:
+            # Vertical line
+            x = int(-c / a)
+            pt1 = (x, 0)
+            pt2 = (x, h - 1)
+
+        img_with_line = image.copy()
+        cv2.line(img_with_line, pt1, pt2, color=color, thickness=thickness)
+        return img_with_line
+    
+    def epipolar_distance(l, x_prime):
+        a, b, c = l
+        u, v = x_prime[0]
+        return abs(a * u + b * v + c) / np.sqrt(a**2 + b**2)
+    
+    def compute_epipolar_lines_batch(F, kpts0):
+        kpts0_h = np.hstack([kpts0, np.ones((kpts0.shape[0], 1))])  # (n, 3)
+        lines = (F @ kpts0_h.T).T  # (n, 3)
+        # Normalize each line
+        norms = np.linalg.norm(lines[:, :2], axis=1, keepdims=True)
+        return lines / norms
+
+    def epipolar_distances_batch(lines, kpts1):
+        a, b, c = lines[:, 0], lines[:, 1], lines[:, 2]
+        u, v = kpts1[:, 0], kpts1[:, 1]
+        return np.abs(a * u + b * v + c)
 
     # Match features with SuperGlue
     @torch.no_grad()
@@ -124,47 +211,66 @@ def run(args):
             frame0_data['scores'] = frame0_data['scores'][valid_mask].to(device)
             continue
 
-        image_i_tensor = load_and_preprocess_image(image_paths[i])
-        frame_i_data = process_frame(image_i_tensor)
 
-        matches, confidences = match_frames(frame0_data, frame_i_data, image_ref_tensor, image_i_tensor)
-        valid = matches > -1
-        num_matches = valid.sum().item()
+        if i % window == window - 1:
+        # if i == 49:
 
-        confidences = confidences[valid]
-        conf_mask = confidences > 0.7 
-        confidences = confidences[conf_mask]
-        num_matches = conf_mask.sum().item()
-        # matches = matches[valid][conf_mask]
-        print(f"[Frame {i:03d}] Matches with frame {n}: {conf_mask.sum()}. Confidence: {confidences.mean().item():.2f}, std: {confidences.std().item():.2f}")
+            image_i_tensor = load_and_preprocess_image(image_paths[i])
+            frame_i_data = process_frame(image_i_tensor)
+
+            matches, confidences = match_frames(frame0_data, frame_i_data, image_ref_tensor, image_i_tensor)
+            valid = matches > -1
+            num_matches = valid.sum().item()
+
+            confidences = confidences[valid]
+            conf_mask = confidences > 0.7 
+            confidences = confidences[conf_mask]
+            num_matches = conf_mask.sum().item()
+            # matches = matches[valid][conf_mask]
+
+            if  num_matches > 0:
+                kpts0 = frame0_data['keypoints'][valid][conf_mask].cpu().numpy()
+                kpts1 = frame_i_data['keypoints'][matches][valid][conf_mask].cpu().numpy()
+  
+                colors = cm.jet(confidences.cpu().numpy())[:, :3] * 255  # RGB colors
+
+                image0 = cv2.imread(str(image_paths[n]))
+                image0 = cv2.cvtColor(image0, cv2.COLOR_BGR2GRAY)
+                image1 = cv2.imread(str(image_paths[i]))
+                image1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+
+                # q = 40
+                # kpts0 = kpts0[q].reshape(-1, 2)
+                # kpts1 = kpts1[q].reshape(-1, 2)
 
 
-        if num_matches > 0 and i % window == window - 1:
-            kpts0 = frame0_data['keypoints'][valid][conf_mask].cpu().numpy()
-            kpts1 = frame_i_data['keypoints'][matches][valid][conf_mask].cpu().numpy()
-            colors = cm.jet(confidences.cpu().numpy())[:, :3] * 255  # RGB colors
 
-            image0 = cv2.imread(str(image_paths[n]))
-            image0 = cv2.cvtColor(image0, cv2.COLOR_BGR2GRAY)
-            image1 = cv2.imread(str(image_paths[i]))
-            image1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+                gt_F = get_fundamental_matrix(K, gt_ext[n], gt_ext[i])
+                gt_lines = compute_epipolar_lines_batch(gt_F, kpts0)
+                gt_error = epipolar_distances_batch(gt_lines, kpts1)
+                
+                dpvo_F = get_fundamental_matrix(K, dpvo_ext[n], gt_ext[i])
+                dpvo_lines = compute_epipolar_lines_batch(dpvo_F, kpts0)
+                dpvo_error = epipolar_distances_batch(dpvo_lines, kpts1)
 
-            small_text = [
-                'Keypoint Threshold: {:.4f}'.format(k_thresh),
-                'Match Threshold: {:.2f}'.format(m_thresh)
-            ]
+                print("Epipolar distance diff:", (gt_error.mean().item() - dpvo_error.mean().item()), gt_error.mean().item(), dpvo_error.mean().item())
+                
+                small_text = [
+                    'Keypoint Threshold: {:.4f}'.format(k_thresh),
+                    'Match Threshold: {:.2f}'.format(m_thresh)
+                ]
 
-            out = make_matching_plot_fast(
-                image0, image1, frame0_data['keypoints'].cpu().numpy(),
-                frame_i_data['keypoints'].cpu().numpy(), kpts0, kpts1,
-                colors, small_text, 
-                path=None, show_keypoints=False,
-                small_text=[f'Matches: {num_matches}', f'Frame pair: {n}-{i}']
-            )
+                out = make_matching_plot_fast(
+                    image0, image1, frame0_data['keypoints'].cpu().numpy(),
+                    frame_i_data['keypoints'].cpu().numpy(), kpts0, kpts1,
+                    colors, small_text, 
+                    path=None, show_keypoints=False,
+                    small_text=[f'Matches: {num_matches}', f'Frame pair: {n}-{i}']
+                )
 
-            save_path = 'scripts/test/' + f"matches_{n:04}_{i:04}.png"
-            cv2.imwrite(str(save_path), out)
-        
+                save_path = 'scripts/test_fundamental/' + f"matches_{n:04}_{i:04}.png"
+                cv2.imwrite(str(save_path), out)
+                print(f"[Frame {i:03d}] Matches with frame {n}: {conf_mask.sum()}. Confidence: {confidences.mean().item():.2f}, std: {confidences.std().item():.2f}")
 
 if __name__ == "__main__":
     cfg, cfg_file, args = parse_args(test=True)
