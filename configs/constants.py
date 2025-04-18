@@ -8,8 +8,8 @@ IMG_FEAT_DIM = {
     'resnet': 2048,
     'vit': 1024
 }
-subject_id = "P4"
-sequence_id = "36"
+subject_id = "P9"
+sequence_id = "80"
 
 N_JOINTS = 17
 root = 'dataset'

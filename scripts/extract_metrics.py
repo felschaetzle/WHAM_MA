@@ -1,13 +1,19 @@
 import joblib
 import os
 
+from datetime import datetime
+
+# Generate today's date as a string
+date = datetime.now().strftime("%d_%m_%y")
+
+
 # List of sequences to process
 emdb = joblib.load("dataset/parsed_data/emdb_2_vit.pth")
 emdb_seq = emdb["vid"]
 
 # Dictionary to store all results
 all_data = {}
-date = "15_4_25"
+# date = "15_4_25"
 
 if True:
     for elm in emdb_seq:
@@ -31,8 +37,8 @@ if True:
 
         # upper_bound_path = f"output/emdb2/{a}/upper_bound.pkl"
         # files["Upper Bound"] = upper_bound_path
-        # upper_bound_beta_path = f"output/emdb2/{a}/upper_bound_gt_betas.pkl"
-        # files["Upper Bound"] = upper_bound_beta_path 
+        upper_bound_beta_path = f"output/emdb2/{a}/upper_bound_gt_betas.pkl"
+        files["Upper Bound"] = upper_bound_beta_path 
 
 
         # Store data in dictionary
@@ -84,7 +90,7 @@ df = pd.concat([df, pd.DataFrame([mean_row])])
 
 
 # Save the DataFrame to a csv file
-output_file = "output/emdb2/combined_metrics_" + date + ".csv"
+output_file = "output/emdb2/combined_metrics_" + date + "_500.csv"
 df.astype(float)
 df.to_csv(output_file, sep=',', decimal='.')
 print(f"Data saved successfully to {output_file}")

@@ -22,8 +22,20 @@ from configs.config import parse_args
 
 from scripts.custom_utils import get_sequence_root
 import numpy as np
+from glob import glob
+import pandas as pd
 
 def run(args):
+
+    root = get_sequence_root(args, gt=True)
+    image_dir = Path(root) / "images"  # Adjust this path as needed
+     # replace with your actual path
+    image_paths = sorted(image_dir.glob("*.jpg"))  # or *.jpg if needed
+    assert len(image_paths) >= 2, "Need at least 2 images to match"
+
+    gt_data_pth = glob(os.path.join(root,"*.pkl"))[0]
+
+
     # Device config
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
@@ -35,20 +47,24 @@ def run(args):
         'max_keypoints': 1024
     }).to(device).eval()
 
-    superglue = SuperGlue({
-        'weights': 'indoor'
-    }).to(device).eval()
 
-    root = get_sequence_root(args, gt=True)
-    image_dir = Path(root) / "images"  # Adjust this path as needed
-     # replace with your actual path
-    image_paths = sorted(image_dir.glob("*.jpg"))  # or *.jpg if needed
-    assert len(image_paths) >= 2, "Need at least 2 images to match"
-
-    gt_data = joblib.load("/mnt/hdd/emdb_dataset/P4/36_outdoor_long_walk/P4_36_outdoor_long_walk_data.pkl")
+    if "outdoor" in gt_data_pth:
+        superglue = SuperGlue({
+            'weights': 'outdoor'
+        }).to(device).eval()
+    elif "indoor" in gt_data_pth:
+        superglue = SuperGlue({
+            'weights': 'indoor'
+        }).to(device).eval() 
+    else:
+        print("Not indoor and not outdoor!")
+        return
+    
+    gt_data = joblib.load(gt_data_pth)
     bbox = gt_data['bboxes']['bboxes']
     gt_ext = gt_data['camera']['extrinsics']
     K = gt_data['camera']['intrinsics'] 
+    frame_mask = gt_data['good_frames_mask']
 
 
     wham_root = get_sequence_root(args, False)
@@ -56,7 +72,11 @@ def run(args):
     baseline = joblib.load(wham_root+'/baseline_gt_betas.pkl')
     dpvo_ext = baseline['dpvo_extrinsics']
 
-
+    if args.smooth_wham_cam:
+        wham_ext = baseline['wham_cam']
+    else:
+        wham_ext = baseline['wham_cam_init']
+  
     # Load and preprocess
     def load_and_preprocess_image(path):
         image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
@@ -75,7 +95,6 @@ def run(args):
             'descriptors': pred['descriptors'][0],
             'scores': pred['scores'][0]
         }
-
 
     def filter_keypoints_outside_bboxes(keypoints, bbox):
         """Removes keypoints that fall inside any of the bounding boxes."""
@@ -96,6 +115,7 @@ def run(args):
             [t[2], 0, -t[0]],
             [-t[1], t[0], 0]
         ])
+    
     def get_fundamental_matrix(K, extrinsics_ref, extrinsics_frame):
         """
         Compute fundamental matrix from two extrinsics and intrinsics.
@@ -117,19 +137,6 @@ def run(args):
         F = K_inv.T @ E @ K_inv
         return F/np.linalg.norm(F)
 
-    def compute_epipolar_line(F, x0):
-        """
-        Compute epipolar line in frame 49 for point x0 in frame 0.
-        Args:
-            F: Fundamental matrix (3x3)
-            x0: point in frame 0 in homogeneous coords [x, y, 1]
-        Returns:
-            l49: line coefficients (a, b, c) for ax + by + c = 0
-        """
-        x0_h = np.append(x0, 1)  # Make homogeneous: [x, y, 1]
-        l = F @ x0_h           # Epipolar line in frame 49
-        return l / np.linalg.norm(l[:2])  # Normalize (optional)
-
     def draw_epipolar_line(image, l, color=(0, 255, 0), thickness=2):
         a, b, c = l
         h, w = image.shape[:2]
@@ -149,11 +156,6 @@ def run(args):
         img_with_line = image.copy()
         cv2.line(img_with_line, pt1, pt2, color=color, thickness=thickness)
         return img_with_line
-    
-    def epipolar_distance(l, x_prime):
-        a, b, c = l
-        u, v = x_prime[0]
-        return abs(a * u + b * v + c) / np.sqrt(a**2 + b**2)
     
     def compute_epipolar_lines_batch(F, kpts0):
         kpts0_h = np.hstack([kpts0, np.ones((kpts0.shape[0], 1))])  # (n, 3)
@@ -187,16 +189,32 @@ def run(args):
 
     # ---- Main Matching Loop ----
     n = 0
-    window = 50
+    n_wham = 0
+    window = 70
 
     k_thresh = superpoint.config['keypoint_threshold']
     m_thresh = superglue.config['match_threshold']
     # Match every other frame against frame 0
-    for i in range(len(image_paths)):
+
+    gt_epi_error = []
+    dpvo_epi_error = []
+    wham_epi_error = []
+    index = []
+
+    num_keypoints = []
+    conf = []
+
+    frames = np.array(range(len(image_paths)))[frame_mask]
+
+    for i, elm in enumerate(frames):
+        # if i > 900:
+        #     print('h')
+            # break
         if i % window == 0:
-            n = i
-            print("Processing reference frame", i)
-            image_ref_tensor = load_and_preprocess_image(image_paths[i])
+            n = elm
+            n_wham = i
+
+            image_ref_tensor = load_and_preprocess_image(image_paths[elm])
             frame0_data = process_frame(image_ref_tensor)
 
             # Filter out keypoints inside bounding boxes
@@ -211,11 +229,8 @@ def run(args):
             frame0_data['scores'] = frame0_data['scores'][valid_mask].to(device)
             continue
 
-
         if i % window == window - 1:
-        # if i == 49:
-
-            image_i_tensor = load_and_preprocess_image(image_paths[i])
+            image_i_tensor = load_and_preprocess_image(image_paths[elm])
             frame_i_data = process_frame(image_i_tensor)
 
             matches, confidences = match_frames(frame0_data, frame_i_data, image_ref_tensor, image_i_tensor)
@@ -223,10 +238,15 @@ def run(args):
             num_matches = valid.sum().item()
 
             confidences = confidences[valid]
-            conf_mask = confidences > 0.7 
+            conf_mask = confidences > 0.7
             confidences = confidences[conf_mask]
             num_matches = conf_mask.sum().item()
             # matches = matches[valid][conf_mask]
+            num_keypoints.append(num_matches)
+            if num_matches == 0:
+                conf.append(0)
+            else:
+                conf.append(confidences.mean().item()*100)
 
             if  num_matches > 0:
                 kpts0 = frame0_data['keypoints'][valid][conf_mask].cpu().numpy()
@@ -239,21 +259,24 @@ def run(args):
                 image1 = cv2.imread(str(image_paths[i]))
                 image1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
 
-                # q = 40
-                # kpts0 = kpts0[q].reshape(-1, 2)
-                # kpts1 = kpts1[q].reshape(-1, 2)
-
-
-
-                gt_F = get_fundamental_matrix(K, gt_ext[n], gt_ext[i])
+                gt_F = get_fundamental_matrix(K, gt_ext[n], gt_ext[elm])
                 gt_lines = compute_epipolar_lines_batch(gt_F, kpts0)
                 gt_error = epipolar_distances_batch(gt_lines, kpts1)
                 
-                dpvo_F = get_fundamental_matrix(K, dpvo_ext[n], gt_ext[i])
+                dpvo_F = get_fundamental_matrix(K, dpvo_ext[n], dpvo_ext[elm])
                 dpvo_lines = compute_epipolar_lines_batch(dpvo_F, kpts0)
                 dpvo_error = epipolar_distances_batch(dpvo_lines, kpts1)
 
-                print("Epipolar distance diff:", (gt_error.mean().item() - dpvo_error.mean().item()), gt_error.mean().item(), dpvo_error.mean().item())
+                wham_F = get_fundamental_matrix(K, wham_ext[n_wham], wham_ext[i])
+                wham_lines = compute_epipolar_lines_batch(wham_F, kpts0)
+                wham_error = epipolar_distances_batch(wham_lines, kpts1)
+
+                gt_epi_error.append(gt_error.mean())
+                dpvo_epi_error.append(dpvo_error.mean())
+                wham_epi_error.append(wham_error.mean())
+                index.append(elm)
+
+                # print("Epipolar distance GT, DPVO, WHAM:", gt_error.mean().item(), dpvo_error.mean().item(), wham_error.mean())
                 
                 small_text = [
                     'Keypoint Threshold: {:.4f}'.format(k_thresh),
@@ -268,10 +291,73 @@ def run(args):
                     small_text=[f'Matches: {num_matches}', f'Frame pair: {n}-{i}']
                 )
 
-                save_path = 'scripts/test_fundamental/' + f"matches_{n:04}_{i:04}.png"
+                save_path = 'output/tracker/images/' + f"matches_{n:04}_{i:04}.png"
                 cv2.imwrite(str(save_path), out)
-                print(f"[Frame {i:03d}] Matches with frame {n}: {conf_mask.sum()}. Confidence: {confidences.mean().item():.2f}, std: {confidences.std().item():.2f}")
+                # print(f"[Frame {i:03d}] Matches with frame {n}: {conf_mask.sum()}. Confidence: {confidences.mean().item():.2f}, std: {confidences.std().item():.2f}")
+            else:
+                gt_epi_error.append(0)
+                dpvo_epi_error.append(0)
+                wham_epi_error.append(0)
+                index.append(elm)
+                print('no matches for frame', i)
 
+    pth_root = f"output/tracker/{args.subject}_{args.sequence}"
+    if args.smooth_wham_cam:
+        path = f"{pth_root}_smooth_wham_cam"
+    else:
+        path = pth_root
+
+
+    # === Plot 1: Epipolar Errors === #
+    p = path+"_epipolor_distance.png"
+    plt.figure(figsize=(10, 5))
+    plt.plot(index, gt_epi_error, label='GT', marker='o')
+    plt.plot(index, dpvo_epi_error, label='DPVO', marker='o')
+    plt.plot(index, wham_epi_error, label='WHAM', marker='o')
+
+    plt.xlabel('Frame Index')
+    plt.ylabel('Epipolar Error (pixels)')
+    plt.title('Epipolar Error Over Time')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(p)
+    print("Epipolar error plot saved to", p)
+
+    # === Plot 2: Confidence and Keypoints === #
+    p = path +"_keypoints.png"
+    plt.figure(figsize=(10, 5))
+    plt.plot(index, conf, label="Confidence", marker="o")
+    plt.plot(index, num_keypoints, label="# Keypoints", marker="o")
+
+    plt.xlabel('Frame Index')
+    plt.ylabel('Confidence / Keypoints')
+    plt.title('Detection Confidence and Keypoints Over Time')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(p)
+    print("Confidence/keypoints plot saved to", p)
+
+
+    df = pd.DataFrame({
+        'frame_index': index,          # frame indices (same length as num_keypoints)
+        'num_keypoints': num_keypoints,
+        'confidence': conf,
+        'gt_epipolar_loss': gt_epi_error,
+        'dpvo_epipolar_loss': dpvo_epi_error,
+        'wham_epipolar_loss': wham_epi_error
+    })
+
+    # Build file path (matching the naming from the plots)
+    csv_path = f"{path}.csv"
+    df.to_csv(csv_path, index=False)
+
+    print("Saved num_keypoints to", csv_path)
+
+
+
+    print('done')
 if __name__ == "__main__":
     cfg, cfg_file, args = parse_args(test=True)
     run(args)

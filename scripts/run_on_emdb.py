@@ -6,6 +6,32 @@ from custom_utils import find_substring
 # Set the path to the root directory of your dataset
 DATASET_DIR = "/mnt/hdd/emdb_dataset/"
 
+def execute_tracker(sub_id, seq_id, args=None):
+	try:
+		command = [
+			"python", 
+			"scripts/superglue_tracker_test.py", 
+			"--subject",
+			sub_id,
+			"--sequence",
+			seq_id]
+		if args is not None:
+			command.extend(args)
+
+		# Execute the command
+		print("Executing command:", " ".join(command))
+
+		result = subprocess.run(command)
+
+		# Print the output and error (if any)
+		print("Output:\n", result.stdout)
+
+	except subprocess.CalledProcessError as e:
+		print(f"Error running demo.py")
+		print(e.stderr)
+
+
+
 def execute_compute_metrics(sub_id, seq_id, args=None):
 	try:
 		command = [
@@ -107,8 +133,11 @@ def main():
 			# execute_optimize(subject_id, sequence_id, ["--upper_bound"])
 			# execute_optimize(subject_id, sequence_id, ["--upper_bound", '--use_gt_betas'])
 
-			execute_compute_metrics(subject_id, sequence_id)
-			execute_compute_metrics(subject_id, sequence_id, ["--baseline"])
+			# execute_compute_metrics(subject_id, sequence_id)
+			# execute_compute_metrics(subject_id, sequence_id, ["--baseline"])
+
+			execute_tracker(subject_id, sequence_id)
+
 		else:
 			print("FAIL!")
 

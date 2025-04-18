@@ -166,6 +166,13 @@ def parse_args(test=False):
         default=False
     )
 
+    parser.add_argument(
+        "--smooth_wham_cam",
+        action='store_true',
+        default=False
+    )
+    
+
 
     args = parser.parse_args()
     # print(args, end='\n\n')

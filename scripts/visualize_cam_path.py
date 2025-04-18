@@ -275,8 +275,9 @@ def main(args):
         wham_ext = torch.from_numpy(output['wham_cam'])
         aux_wham_cam_pose = get_camera_position(wham_ext.squeeze().cpu())
 
-        scale, _, _ = align_pcl(aux_wham_cam_pose, 
+        scale_check, _, _ = align_pcl(aux_wham_cam_pose, 
                                 aux_dpvo_cam_pose[data['good_frames_mask']].float())
+        scale = output['dpvo_scale']
         print(scale)
         dpvo_extrinsics[:, :3, 3] *= float(scale)
         dpvo_extrinsics = dpvo_extrinsics.cpu() @ extrinsics[0]
@@ -286,7 +287,7 @@ def main(args):
         dpvo_extrinsics_ = output['dpvo_extrinsics']
         # print("shape should be same", dpvo_extrinsics.shape)
         print('Saity diff', (dpvo_extrinsics - dpvo_extrinsics_).mean())
-        print('Scale diff', (scale - output['dpvo_scale']))
+        print('Scale diff', (scale - scale_check))
 
         dpvo_camera = OpenCVCamera(intrinsics, dpvo_extrinsics[:,:3], cols, rows, viewer=viewer, name="DPVO Camera")
 
@@ -308,18 +309,18 @@ def main(args):
         wham_cam_extrinsics = output['wham_cam']
         # wham_cam_extrinsics = np.linalg.inv(wham_cam_extrinsics)
         print(wham_cam_extrinsics.shape, dpvo_extrinsics.shape)
-        # wham_camera = OpenCVCamera(intrinsics, wham_cam_extrinsics[:,:3], cols, rows, viewer=viewer, name="WHAM Camera")
+        wham_camera = OpenCVCamera(intrinsics, wham_cam_extrinsics[:,:3], cols, rows, viewer=viewer, name="WHAM Camera")
         
-        # wham_cam_bb = Billboard.from_camera_and_distance(
-        #     wham_camera,
-        #     10.0,
-        #     cols,
-        #     rows,
-        #     image_files,
-        #     image_process_fn=drawing_function(kp2d, bboxes),
-        #     name="Image WHAM",
-        # )
-        # viewer.scene.add(wham_cam_bb, wham_camera)
+        wham_cam_bb = Billboard.from_camera_and_distance(
+            wham_camera,
+            10.0,
+            cols,
+            rows,
+            image_files,
+            image_process_fn=drawing_function(kp2d, bboxes),
+            name="Image WHAM",
+        )
+        viewer.scene.add(wham_cam_bb, wham_camera)
         
 
     gt_camera = OpenCVCamera(intrinsics, extrinsics[:, :3], cols, rows, viewer=viewer, name="GT Camera")
@@ -427,6 +428,15 @@ def main(args):
             )
             viewer.scene.add(wham_cam_path)
 
+            wham_cam_init_pos = get_camera_position(output['wham_cam_init'])
+            wham_cam_init_path = LinesTrail(
+                wham_cam_init_pos,
+                r_base=0.003,
+                color=(0.2, 0.5, 0.8, 1),
+                cast_shadow=False,
+                name="Camera Trajectory: WHAM Init",
+            )
+            viewer.scene.add(wham_cam_init_path)
 
             viewer.scene.add(dpvo_cam_path, gt_camera_path)
 

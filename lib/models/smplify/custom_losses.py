@@ -6,10 +6,10 @@ from lib.models.smpl import convert_pare_to_full_img_cam
 import numpy as np
 import cv2
 
-from lib.utils.transforms import matrix_to_rotation_6d
+from lib.utils.transforms import matrix_to_rotation_6d, rotation_6d_to_matrix
 
 
-def gmof(x, sigma):
+def gmof(x, sigma=100):
     """
     Geman-McClure error function, cut off at sigma^2
     """
@@ -30,7 +30,13 @@ def compute_jitter_custom(x):
     """
     return torch.linalg.norm(x[2:, :] + x[:-2, :] - 2 * x[1:-1, :], dim=-1)
 
+def compute_jitter_velocity(x):
+    return torch.norm(x[1:] - x[:-1], dim=-1)
 
+def compute_jitter_combo(x):
+    v = torch.norm(x[1:] - x[:-1], dim=-1)
+    a = torch.norm(x[2:] + x[:-2] - 2 * x[1:-1], dim=-1)
+    return v.mean() + 0.5 * a.mean()
 
 class CustomSMPLifyLoss(torch.nn.Module):
     def __init__(self, 
@@ -47,7 +53,6 @@ class CustomSMPLifyLoss(torch.nn.Module):
         self.device = device
         self.res = res
         self.cam_intrinsics = cam_intrinsics
-        # self.init_pose = init_pose
         self.extrinsics = extrinsics
         
     def forward(self, joints_2d, params, input_keypoints, bbox, init_pred, joints3d_cam=None, joints3d_cam_pred=None, joints_2d_wham=None,
@@ -81,9 +86,8 @@ class CustomSMPLifyLoss(torch.nn.Module):
         # Loss 4. Smooth loss
         pose_diff = compute_jitter_custom(pred_pose_6d).mean()
         global_orient_diff = compute_jitter_custom(params[1].squeeze(1)).mean()
-        # cam_diff = compute_jitter(cam).mean() # 0.0
         trans_diff = compute_jitter_custom(params[0]).mean() # translation in global coords
-        # local_trans_diff = compute_jitter(joints3d_cam).mean() #  translation in local coords
+        local_trans_diff = compute_jitter(joints3d_cam).mean() #  translation in local coords
 
 
         # delta between frames
@@ -92,7 +96,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         vel = gmof(vel_pred - vel_wham[:-1], sigma)
         vel_loss = vel.mean()
 
-        smooth_error = trans_diff + vel_loss + global_orient_diff + pose_diff
+        smooth_error = trans_diff + pose_diff
 
 
         local_trans_diff = gmof(joints3d_cam - joints3d_cam_pred, sigma).mean() #  translation in local coords
@@ -170,26 +174,48 @@ class CustomSMPLifyLoss(torch.nn.Module):
         
         return closure
     
-def create_SMPL_param_closure(optimizer, smpl, params, joints3d, pose, betas):
-    
-    def closure():
-        optimizer.zero_grad()
+    def create_cam_smooth_closure(self,
+                       optimizer,
+                       smpl, 
+                       params,
+                       bbox,
+                       input_keypoints,
+                       init_pred):
+        
+        def closure():
+            optimizer.zero_grad()
 
-        # T = params[0]
-        # T = T.unsqueeze(0).expand(transl.shape[0], -1, -1)
-        # # transform transl and global_orient from wham to world using T
-        # transl_world = torch.matmul(T[:, :3, :3], transl.unsqueeze(-1)).squeeze(-1) + T[:, :3, 3]
-        # global_orient_world = torch.matmul(T[:, :3, :3].unsqueeze(1), global_orient)
+            output = smpl.forward_align(params[2], init_pred['betas'], cam_intrinsics=self.cam_intrinsics, 
+                                        bbox=bbox, res=self.res, trans_opt=params[0], global_orient_opt=params[1], offset=True)
+            joints3d = output.joints.reshape(*init_pred['cam'].shape[:2], -1, 3)
 
+            # get rotation and translation from extrinsics matrix
+            rotation = rotation_6d_to_matrix(params[3])
+            c = params[4].unsqueeze(-1)
+            t = -rotation @ c        
+            translation = t.squeeze(-1)  
 
+            full_joints2d = full_perspective_projection(
+                joints3d,
+                cam_intrinsics=self.cam_intrinsics,
+                rotation=rotation,
+                translation=translation,
+            )
 
-        output = smpl.forward_align(pose, betas, trans_opt=params[0], global_orient_opt=params[1], offset=True)
-        pred_joints3d = output.joints[:, :17, :]
+            sigma = 100
+            pred_keypoints = full_joints2d[..., :17, :]
+            joints_conf = input_keypoints[..., -1:]
+            reprojection_error = gmof(pred_keypoints - input_keypoints[..., :-1])
+            reprojection_error = ((reprojection_error * joints_conf) / sigma).mean()
 
-        # Calculate 3D distance between predicted and GT joints
-        loss = torch.linalg.norm(pred_joints3d[0, 0, :] - joints3d[0, 0, :]).mean()  # Ensure loss is a scalar
-        # print("loss: ", loss)
-        loss.backward()
-        return loss
-    
-    return closure
+            smooth_center = compute_jitter_velocity(c).mean()
+            smooth_rot = compute_jitter_velocity(params[3]).mean()
+            loss = reprojection_error * 5 + (smooth_center + smooth_rot) * 10
+            # loss = (smooth_center + smooth_rot) * 10
+            loss.backward()
+            # for p in optimizer.param_groups[0]['params']:
+            #     if p.grad is not None and not p.grad.is_contiguous():
+            #         p.grad = p.grad.contiguous()
+            return loss
+        
+        return closure

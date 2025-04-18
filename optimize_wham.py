@@ -17,7 +17,7 @@ from scripts.custom_utils import get_sequence_root, find_substring
 from configs import constants as _C
 
 from scipy.spatial.transform import Rotation as R
-from lib.models.smplify.custom_smplify import optimization_upper_bound, optimization_baseline, W_MPJPE_align, test
+from lib.models.smplify.custom_smplify import optimization_upper_bound, optimization_baseline, W_MPJPE_align, CustomSMPLify
 from lib.eval.eval_utils import align_pcl
 
 from configs.config import get_cfg_defaults
@@ -101,11 +101,6 @@ def run(cfg,
 
     root_r = pred['poses_root_ref'].unsqueeze(0).clone()
     root_v = pred['vel_root'].unsqueeze(0).clone()
-    
-    # create root_v with shape (n,3) and values 0,0,1
-    # root_v = torch.zeros_like(root_v).float().to(cfg.DEVICE)
-    # root_v[:, 0] = 0.5
-    # root_v = root_v.reshape(-1, 3)
 
     # from wham utils rollout_global_motion
     root = rotation_6d_to_matrix(root_r[:])
@@ -215,11 +210,15 @@ def run(cfg,
             T[:3, 3] = tvec.squeeze()
             WHAM_CAM.append(T)
 
-            # print(f"[Frame {i}] tvec: {tvec.ravel()}")
         WHAM_CAM = np.array(WHAM_CAM)
         wham_extrinsics = torch.from_numpy(WHAM_CAM).float().to(cfg.DEVICE).unsqueeze(0)
         pred['wham_cam'] = wham_extrinsics
-        results['wham_cam'] = WHAM_CAM
+        results['wham_cam_init'] = wham_extrinsics.clone().squeeze(0).cpu().numpy()
+
+        custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=50, res=res, device=cfg.DEVICE)
+        pred = custom_smplify.smooth_extrinsics(pred, input_keypoints, bbox, wham_extrinsics, gt_intrinsics)
+
+        results['wham_cam'] = pred['wham_cam'].squeeze(0).cpu().numpy()
 
 
         dpvo_path = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/slam_results_gt_intrinsics.pth"
@@ -227,7 +226,6 @@ def run(cfg,
 
         dpvo_orientation = R.from_quat(dpvo_output[:,3:]).as_matrix()
         dpvo_trans = dpvo_output[:,:3]
-        # create dpvo_cam object
 
         # Create 4x4 transformation matrices for dpvo_cam
         dpvo_cam = np.eye(4)[None].repeat(len(dpvo_orientation), axis=0)
@@ -236,8 +234,6 @@ def run(cfg,
         dpvo_extrinsics = invert_camera_poses(dpvo_cam)
         dpvo_extrinsics = torch.from_numpy(dpvo_extrinsics).float().to(cfg.DEVICE)
 
-        #estimate scale
-        # scale = 14.489 # P8 90
         results['dpvo_extrinsics_unscaled'] = dpvo_extrinsics.clone()
         aux_dpvo = dpvo_extrinsics @ gt_extrinsics[0,0]
         aux_dpvo_cam_pose = get_camera_position(aux_dpvo.cpu())
@@ -252,8 +248,6 @@ def run(cfg,
         results['dpvo_scale'] = scale
         dpvo_extrinsics = dpvo_extrinsics[gt_data['good_frames_mask']].unsqueeze(0)
         
-
-
         pred = optimization_baseline(
             pred, input_keypoints, kwargs['bbox'],
             dpvo_extrinsics, gt_intrinsics,
