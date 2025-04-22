@@ -25,6 +25,121 @@ import numpy as np
 from glob import glob
 import pandas as pd
 
+def clean_mask(mask, kernel_size=5):
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    cleaned = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+    return cleaned
+
+def dilate_mask(mask, dilation_px=10):
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*dilation_px+1, 2*dilation_px+1))
+    dilated = cv2.dilate(mask.astype(np.uint8), kernel)
+    return dilated
+
+def filter_keypoints_outside_bboxes(keypoints, bbox):
+    """Removes keypoints that fall inside any of the bounding boxes."""
+    mask = torch.ones(len(keypoints), dtype=torch.bool)
+    x1, y1, w, h = bbox
+    x2, y2 = x1 + w, y1 + h
+    inside = (
+        (keypoints[:, 0] >= x1) & (keypoints[:, 0] <= x2) &
+        (keypoints[:, 1] >= y1) & (keypoints[:, 1] <= y2)
+    )
+    mask &= ~inside
+    return keypoints[mask], mask
+
+
+def filter_keypoints_outside_mask(keypoints, mask):
+    """
+    Removes keypoints that fall inside the segmentation mask.
+
+    Args:
+        keypoints (torch.Tensor): shape (N, 2), keypoints in (x, y) format
+        mask (np.ndarray or torch.Tensor): shape (H, W), binary mask (0/1 or bool)
+
+    Returns:
+        filtered_keypoints (torch.Tensor): keypoints not inside the mask
+        valid_mask (torch.BoolTensor): mask indicating which keypoints were kept
+    """
+    if isinstance(mask, np.ndarray):
+        mask = torch.from_numpy(mask)
+    mask = mask.bool()
+
+    H, W = mask.shape
+    x = keypoints[:, 0].long()
+    y = keypoints[:, 1].long()
+
+    # Clamp coordinates to ensure they're within the image bounds
+    x = torch.clamp(x, 0, W - 1)
+    y = torch.clamp(y, 0, H - 1)
+
+    # Query mask at keypoint locations
+    inside = mask[y, x]  # shape: (N,)
+    valid_mask = ~inside  # keep those outside the mask
+
+    return keypoints[valid_mask], valid_mask
+
+
+def skew(t):
+    """Return the skew-symmetric matrix of a vector t."""
+    return np.array([
+        [0, -t[2], t[1]],
+        [t[2], 0, -t[0]],
+        [-t[1], t[0], 0]
+    ])
+
+def get_fundamental_matrix(K, extrinsics_ref, extrinsics_frame):
+    """
+    Compute fundamental matrix from two extrinsics and intrinsics.
+
+    extrinsics: [4x4] matrices, world-to-camera (i.e., [R | t])
+    """
+    # Get camera-to-world to compute relative motion from 0 to 49
+    cam_to_world_ref = np.linalg.inv(extrinsics_ref)
+
+    # Relative transform from cam0 to cam49
+    rel_pose = extrinsics_frame @ cam_to_world_ref  # cam0 -> world -> cam49
+    R = rel_pose[:3, :3]
+    t = rel_pose[:3, 3]
+
+    # Compute fundamental matrix
+    t_skew = skew(t)
+    E = t_skew @ R  # Essential matrix
+    K_inv = np.linalg.inv(K)
+    F = K_inv.T @ E @ K_inv
+    return F/np.linalg.norm(F)
+
+def draw_epipolar_line(image, l, color=(0, 255, 0), thickness=2):
+    a, b, c = l
+    h, w = image.shape[:2]
+
+    # Compute two endpoints of the line (at x=0 and x=w-1)
+    if np.abs(b) > 1e-5:
+        y0 = int((-c) / b)
+        y1 = int((-a * (w - 1) - c) / b)
+        pt1 = (0, y0)
+        pt2 = (w - 1, y1)
+    else:
+        # Vertical line
+        x = int(-c / a)
+        pt1 = (x, 0)
+        pt2 = (x, h - 1)
+
+    img_with_line = image.copy()
+    cv2.line(img_with_line, pt1, pt2, color=color, thickness=thickness)
+    return img_with_line
+
+def compute_epipolar_lines_batch(F, kpts0):
+    kpts0_h = np.hstack([kpts0, np.ones((kpts0.shape[0], 1))])  # (n, 3)
+    lines = (F @ kpts0_h.T).T  # (n, 3)
+    # Normalize each line
+    norms = np.linalg.norm(lines[:, :2], axis=1, keepdims=True)
+    return lines / norms
+
+def epipolar_distances_batch(lines, kpts1):
+    a, b, c = lines[:, 0], lines[:, 1], lines[:, 2]
+    u, v = kpts1[:, 0], kpts1[:, 1]
+    return np.abs(a * u + b * v + c)
+
 def run(args):
 
     root = get_sequence_root(args, gt=True)
@@ -76,6 +191,9 @@ def run(args):
         wham_ext = baseline['wham_cam']
     else:
         wham_ext = baseline['wham_cam_init']
+
+    mask_dir = Path(f"/home/felix/sam2/emdb_segmentation/{args.sequence}") # Numpy file with shape (n, h, w)
+    mask_paths = sorted(mask_dir.glob("*.png"))           # shape (n, h, w)
   
     # Load and preprocess
     def load_and_preprocess_image(path):
@@ -95,79 +213,6 @@ def run(args):
             'descriptors': pred['descriptors'][0],
             'scores': pred['scores'][0]
         }
-
-    def filter_keypoints_outside_bboxes(keypoints, bbox):
-        """Removes keypoints that fall inside any of the bounding boxes."""
-        mask = torch.ones(len(keypoints), dtype=torch.bool)
-        x1, y1, w, h = bbox
-        x2, y2 = x1 + w, y1 + h
-        inside = (
-            (keypoints[:, 0] >= x1) & (keypoints[:, 0] <= x2) &
-            (keypoints[:, 1] >= y1) & (keypoints[:, 1] <= y2)
-        )
-        mask &= ~inside
-        return keypoints[mask], mask
-
-    def skew(t):
-        """Return the skew-symmetric matrix of a vector t."""
-        return np.array([
-            [0, -t[2], t[1]],
-            [t[2], 0, -t[0]],
-            [-t[1], t[0], 0]
-        ])
-    
-    def get_fundamental_matrix(K, extrinsics_ref, extrinsics_frame):
-        """
-        Compute fundamental matrix from two extrinsics and intrinsics.
-
-        extrinsics: [4x4] matrices, world-to-camera (i.e., [R | t])
-        """
-        # Get camera-to-world to compute relative motion from 0 to 49
-        cam_to_world_ref = np.linalg.inv(extrinsics_ref)
-
-        # Relative transform from cam0 to cam49
-        rel_pose = extrinsics_frame @ cam_to_world_ref  # cam0 -> world -> cam49
-        R = rel_pose[:3, :3]
-        t = rel_pose[:3, 3]
-
-        # Compute fundamental matrix
-        t_skew = skew(t)
-        E = t_skew @ R  # Essential matrix
-        K_inv = np.linalg.inv(K)
-        F = K_inv.T @ E @ K_inv
-        return F/np.linalg.norm(F)
-
-    def draw_epipolar_line(image, l, color=(0, 255, 0), thickness=2):
-        a, b, c = l
-        h, w = image.shape[:2]
-
-        # Compute two endpoints of the line (at x=0 and x=w-1)
-        if np.abs(b) > 1e-5:
-            y0 = int((-c) / b)
-            y1 = int((-a * (w - 1) - c) / b)
-            pt1 = (0, y0)
-            pt2 = (w - 1, y1)
-        else:
-            # Vertical line
-            x = int(-c / a)
-            pt1 = (x, 0)
-            pt2 = (x, h - 1)
-
-        img_with_line = image.copy()
-        cv2.line(img_with_line, pt1, pt2, color=color, thickness=thickness)
-        return img_with_line
-    
-    def compute_epipolar_lines_batch(F, kpts0):
-        kpts0_h = np.hstack([kpts0, np.ones((kpts0.shape[0], 1))])  # (n, 3)
-        lines = (F @ kpts0_h.T).T  # (n, 3)
-        # Normalize each line
-        norms = np.linalg.norm(lines[:, :2], axis=1, keepdims=True)
-        return lines / norms
-
-    def epipolar_distances_batch(lines, kpts1):
-        a, b, c = lines[:, 0], lines[:, 1], lines[:, 2]
-        u, v = kpts1[:, 0], kpts1[:, 1]
-        return np.abs(a * u + b * v + c)
 
     # Match features with SuperGlue
     @torch.no_grad()
@@ -190,7 +235,7 @@ def run(args):
     # ---- Main Matching Loop ----
     n = 0
     n_wham = 0
-    window = 70
+    window = 40
 
     k_thresh = superpoint.config['keypoint_threshold']
     m_thresh = superglue.config['match_threshold']
@@ -205,11 +250,17 @@ def run(args):
     conf = []
 
     frames = np.array(range(len(image_paths)))[frame_mask]
+    
+    switch_keyframe = False
 
     for i, elm in enumerate(frames):
         # if i > 900:
         #     print('h')
             # break
+
+
+        # keyframe selector:
+
         if i % window == 0:
             n = elm
             n_wham = i
@@ -222,8 +273,17 @@ def run(args):
             bboxes_frame0 = bbox[ref_frame_index]  # shape: (num_people, 4)
             keypoints = frame0_data['keypoints'].cpu()
 
+
+            mask_path = mask_paths[elm]
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+
+            cleaned_mask = clean_mask(mask)
+            offset_mask = dilate_mask(cleaned_mask)
+
+
             # Remove keypoints inside bboxes
-            filtered_kpts, valid_mask = filter_keypoints_outside_bboxes(keypoints, bboxes_frame0)
+            # filtered_kpts, valid_mask = filter_keypoints_outside_bboxes(keypoints, bboxes_frame0)
+            filtered_kpts, valid_mask = filter_keypoints_outside_mask(keypoints, offset_mask)
             frame0_data['keypoints'] = filtered_kpts.to(device)
             frame0_data['descriptors'] = frame0_data['descriptors'][:,valid_mask].to(device)
             frame0_data['scores'] = frame0_data['scores'][valid_mask].to(device)
@@ -241,7 +301,6 @@ def run(args):
             conf_mask = confidences > 0.7
             confidences = confidences[conf_mask]
             num_matches = conf_mask.sum().item()
-            # matches = matches[valid][conf_mask]
             num_keypoints.append(num_matches)
             if num_matches == 0:
                 conf.append(0)
@@ -354,8 +413,6 @@ def run(args):
     df.to_csv(csv_path, index=False)
 
     print("Saved num_keypoints to", csv_path)
-
-
 
     print('done')
 if __name__ == "__main__":
