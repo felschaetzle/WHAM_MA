@@ -257,12 +257,12 @@ def main(args):
     image_files = sorted(glob(os.path.join(image_dir, "*.jpg")))
 
     # Load camera information.
-    intrinsics = data["camera"]["intrinsics"]
+    intrinsics_raw = data["camera"]["intrinsics"]
     extrinsics = data["camera"]["extrinsics"]
     cols, rows = data["camera"]["width"], data["camera"]["height"]
 
     # Prepare the camera.
-    intrinsics = np.repeat(intrinsics[np.newaxis, :, :], len(extrinsics), axis=0)
+    intrinsics = np.repeat(intrinsics_raw[np.newaxis, :, :], len(extrinsics), axis=0)
     
 
     if args.baseline:
@@ -308,19 +308,21 @@ def main(args):
 
         wham_cam_extrinsics = output['wham_cam']
         # wham_cam_extrinsics = np.linalg.inv(wham_cam_extrinsics)
-        print(wham_cam_extrinsics.shape, dpvo_extrinsics.shape)
-        wham_camera = OpenCVCamera(intrinsics, wham_cam_extrinsics[:,:3], cols, rows, viewer=viewer, name="WHAM Camera")
+        print(wham_cam_extrinsics.shape, dpvo_extrinsics.shape, cols, rows)
+        intrinsics_wham = np.repeat(intrinsics_raw[np.newaxis, :, :], wham_cam_extrinsics.shape[0], axis=0)
+
+        # wham_camera = OpenCVCamera(intrinsics_wham, wham_cam_extrinsics[:,:3], cols, rows, viewer=viewer, name="WHAM Camera")
         
-        wham_cam_bb = Billboard.from_camera_and_distance(
-            wham_camera,
-            10.0,
-            cols,
-            rows,
-            image_files,
-            image_process_fn=drawing_function(kp2d, bboxes),
-            name="Image WHAM",
-        )
-        viewer.scene.add(wham_cam_bb, wham_camera)
+        # wham_cam_bb = Billboard.from_camera_and_distance(
+        #     wham_camera,
+        #     10.0,
+        #     cols,
+        #     rows,
+        #     image_files,
+        #     image_process_fn=drawing_function(kp2d, bboxes),
+        #     name="Image WHAM",
+        # )
+        # viewer.scene.add(wham_cam_bb, wham_camera)
         
 
     gt_camera = OpenCVCamera(intrinsics, extrinsics[:, :3], cols, rows, viewer=viewer, name="GT Camera")
