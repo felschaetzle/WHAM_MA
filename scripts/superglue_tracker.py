@@ -142,6 +142,31 @@ def epipolar_distances_batch(lines, kpts1):
     u, v = kpts1[:, 0], kpts1[:, 1]
     return np.abs(a * u + b * v + c)
 
+def visualize_tracks(n, elm, frame0_data, frame_i_data, kpts0, kpts1, confidences, num_matches, image_paths, args, k_thresh, m_thresh):
+    image0 = cv2.imread(str(image_paths[n]))
+    image0 = cv2.cvtColor(image0, cv2.COLOR_BGR2GRAY)
+    image1 = cv2.imread(str(image_paths[elm]))
+    image1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+
+    colors = cm.jet(confidences.cpu().numpy())[:, :3] * 255  # RGB colors
+
+    small_text = [
+        'Keypoint Threshold: {:.4f}'.format(k_thresh),
+        'Match Threshold: {:.2f}'.format(m_thresh)
+    ]
+
+    out = make_matching_plot_fast(
+        image0, image1, frame0_data['keypoints'].cpu().numpy(),
+        frame_i_data['keypoints'].cpu().numpy(), kpts0, kpts1,
+        colors, small_text, 
+        path=None, show_keypoints=False,
+        small_text=[f'Matches: {num_matches}', f'Frame pair: {n}-{elm}']
+    )
+
+    save_path = f'output/tracker/images_{args.sequence}/' + f"matches_{n:05}_{elm:05}.png"
+    print(f"Save image to: {save_path}")
+    cv2.imwrite(str(save_path), out)
+
 def run(args):
 
     root = get_sequence_root(args, gt=True)
@@ -238,6 +263,8 @@ def run(args):
     n_wham = 0
     window = 40
     num_matches_threshold = 10
+    set_match_num_matches_threshold = False
+
 
     k_thresh = superpoint.config['keypoint_threshold']
     m_thresh = superglue.config['match_threshold']
@@ -253,12 +280,18 @@ def run(args):
     num_keypoints = []
     conf = []
 
-    lenght = frame_mask.sum()
+    length = frame_mask.sum()
     frames = np.array(range(len(image_paths)))[frame_mask]
 
     switch_keyframe = True
-    
-    for i, elm in tqdm(enumerate(frames), total=frames.shape[0]):
+    i = 0
+    hot = False
+
+    pbar = tqdm(total=length, desc="Processing frames")
+    # for i, elm in tqdm(enumerate(frames), total=frames.shape[0]):
+    while i < length:
+        pbar.update(1)
+        elm = frames[i]
         # if elm < 815 or elm > 1010:
         #     continue
         if switch_keyframe:
@@ -266,10 +299,8 @@ def run(args):
 
             if i == 0:
                 n = elm
-                n_wham = i
-            else:
-                n = frames[i-1]
-                n_wham = i-1
+            
+            print("set new keyframe: ", n)
             image_ref_tensor = load_and_preprocess_image(image_paths[n])
             frame0_data = process_frame(image_ref_tensor)
             
@@ -287,8 +318,10 @@ def run(args):
             offset_mask = dilate_mask(cleaned_mask)
             
             _, outside_seg_mask = filter_keypoints_outside_mask(keypoints, offset_mask)
+            set_match_num_matches_threshold = True
 
             if i == 0:
+                i += 1
                 continue
 
         image_i_tensor = load_and_preprocess_image(image_paths[elm])
@@ -304,12 +337,13 @@ def run(args):
         num_matches = valid.sum().item()
 
         confidences = confidences[valid]
-        conf_mask = confidences > 0.7
+        conf_mask = confidences > 0.85
         confidences = confidences[conf_mask]
         num_matches = conf_mask.sum().item()
 
         kpts0 = frame0_data['keypoints'][outside_seg_mask][valid][conf_mask].cpu().numpy()
         kpts1 = frame_i_data['keypoints'][matches][outside_seg_mask][valid][conf_mask].cpu().numpy()
+        assert num_matches == kpts0.shape[0]
 
         if kpts0.shape[0] >= num_matches_threshold:
 
@@ -324,160 +358,66 @@ def run(args):
             kpts0 = kpts0[current_outside_seg_mask]
             kpts1 = kpts1[current_outside_seg_mask]
             confidences = confidences[current_outside_seg_mask]
-            store_kp = {'current_frame': elm, 'key_frame': n, "kp0": kpts0, "kp1": kpts1, "conf": confidences.cpu().numpy()}
 
-        else:
+
+        if i == length - 1:
             store_kp = {'current_frame': elm, 'key_frame': n, "kp0": kpts0, "kp1": kpts1, "conf": confidences.cpu().numpy()}
-        keypoints_db.append(store_kp)
+            keypoints_db.append(store_kp)
+            visualize_tracks(n, elm, frame0_data, frame_i_data, kpts0, kpts1, confidences, num_matches, image_paths, args, k_thresh, m_thresh)
+            pbar.close()
+            break
+
+        if set_match_num_matches_threshold:
+            set_match_num_matches_threshold = False
+            num_matches_threshold = max(int(kpts0.shape[0]/10), 10)
+            print("Set match threshold to: ", num_matches_threshold)
 
         if num_matches < num_matches_threshold:
             switch_keyframe = True
-            print(f"{num_matches} is not enough matches between {n} and {elm}. New keyframe {elm}")
-            if num_matches == 0:
-                print("Zero matches no vis!")
+            if hot:
+                store_kp = {'current_frame': elm, 'key_frame': n, "kp0": None, "kp1": None, "conf": None}
+                keypoints_db.append(store_kp)
+                n = elm
+                i +=1
+                print("@@@ HOT @@@@")
+
                 continue
 
-        if  n-elm > lenght/10:
+            hot = True
+            visualize_tracks(n_prev, elm_prev, frame0_data_prev, frame_i_data_prev, kpts0_prev, kpts1_prev, confidences_prev, num_matches_prev, image_paths, args, k_thresh, m_thresh)
+
+            print(f"{num_matches} is not enough matches between {n} and {elm}. New keyframe {frames[i-1]}")
+            n = frames[i-1]
+            # if num_matches == 0:
+            #     print("Zero matches no vis!")
+            continue
+
+        if elm - n > length/10 and i != length - 1:
             switch_keyframe = True
-            print(f"More then 10th of sequence since last keyframe. New keyframe {elm}")
+            visualize_tracks(n_prev, elm_prev, frame0_data_prev, frame_i_data_prev, kpts0_prev, kpts1_prev, confidences_prev, num_matches_prev, image_paths, args, k_thresh, m_thresh)
+            n = frames[i-1]
+            print(f"More then 10th of sequence since last keyframe. New keyframe {n}")
+            continue
 
-        image0 = cv2.imread(str(image_paths[n]))
-        image0 = cv2.cvtColor(image0, cv2.COLOR_BGR2GRAY)
-        image1 = cv2.imread(str(image_paths[elm]))
-        image1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+        hot = False
 
-        colors = cm.jet(confidences.cpu().numpy())[:, :3] * 255  # RGB colors
+        store_kp = {'current_frame': elm, 'key_frame': n, "kp0": kpts0, "kp1": kpts1, "conf": confidences.cpu().numpy()}
+        keypoints_db.append(store_kp)
+        
+        n_prev = n
+        elm_prev = elm
+        frame0_data_prev = frame0_data.copy()
+        frame_i_data_prev = frame_i_data.copy()
+        kpts0_prev = kpts0.copy()
+        kpts1_prev = kpts1.copy()
+        confidences_prev = confidences.clone()
+        num_matches_prev = num_matches
 
-        small_text = [
-            'Keypoint Threshold: {:.4f}'.format(k_thresh),
-            'Match Threshold: {:.2f}'.format(m_thresh)
-        ]
-
-        out = make_matching_plot_fast(
-            image0, image1, frame0_data['keypoints'].cpu().numpy(),
-            frame_i_data['keypoints'].cpu().numpy(), kpts0, kpts1,
-            colors, small_text, 
-            path=None, show_keypoints=False,
-            small_text=[f'Matches: {num_matches}', f'Frame pair: {n}-{elm}']
-        )
-
-        save_path = f'output/tracker/images_{args.sequence}/' + f"matches_{n:05}_{elm:05}.png"
-        cv2.imwrite(str(save_path), out)
+        i += 1
+        # if i>100:
+        #     break
 
     joblib.dump(keypoints_db, f'output/tracker/{args.sequence}.pkl')
-
-    #     num_keypoints.append(num_matches)
-    #     if num_matches == 0:
-    #         conf.append(0)
-    #     else:
-    #         conf.append(confidences.mean().item()*100)
-
-    #     if  num_matches > 0:
-            # kpts0 = frame0_data['keypoints'][valid][conf_mask].cpu().numpy()
-            # kpts1 = frame_i_data['keypoints'][matches][valid][conf_mask].cpu().numpy()
-
-            # colors = cm.jet(confidences.cpu().numpy())[:, :3] * 255  # RGB colors
-
-            # image0 = cv2.imread(str(image_paths[n]))
-            # image0 = cv2.cvtColor(image0, cv2.COLOR_BGR2GRAY)
-            # image1 = cv2.imread(str(image_paths[i]))
-            # image1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
-
-    #         gt_F = get_fundamental_matrix(K, gt_ext[n], gt_ext[elm])
-    #         gt_lines = compute_epipolar_lines_batch(gt_F, kpts0)
-    #         gt_error = epipolar_distances_batch(gt_lines, kpts1)
-            
-    #         dpvo_F = get_fundamental_matrix(K, dpvo_ext[n], dpvo_ext[elm])
-    #         dpvo_lines = compute_epipolar_lines_batch(dpvo_F, kpts0)
-    #         dpvo_error = epipolar_distances_batch(dpvo_lines, kpts1)
-
-    #         wham_F = get_fundamental_matrix(K, wham_ext[n_wham], wham_ext[i])
-    #         wham_lines = compute_epipolar_lines_batch(wham_F, kpts0)
-    #         wham_error = epipolar_distances_batch(wham_lines, kpts1)
-
-    #         gt_epi_error.append(gt_error.mean())
-    #         dpvo_epi_error.append(dpvo_error.mean())
-    #         wham_epi_error.append(wham_error.mean())
-    #         index.append(elm)
-
-    #         # print("Epipolar distance GT, DPVO, WHAM:", gt_error.mean().item(), dpvo_error.mean().item(), wham_error.mean())
-            
-            # small_text = [
-            #     'Keypoint Threshold: {:.4f}'.format(k_thresh),
-            #     'Match Threshold: {:.2f}'.format(m_thresh)
-            # ]
-
-            # out = make_matching_plot_fast(
-            #     image0, image1, frame0_data['keypoints'].cpu().numpy(),
-            #     frame_i_data['keypoints'].cpu().numpy(), kpts0, kpts1,
-            #     colors, small_text, 
-            #     path=None, show_keypoints=False,
-            #     small_text=[f'Matches: {num_matches}', f'Frame pair: {n}-{i}']
-            # )
-
-            # save_path = 'output/tracker/images/' + f"matches_{n:04}_{i:04}.png"
-            # cv2.imwrite(str(save_path), out)
-    #         # print(f"[Frame {i:03d}] Matches with frame {n}: {conf_mask.sum()}. Confidence: {confidences.mean().item():.2f}, std: {confidences.std().item():.2f}")
-    #     else:
-    #         gt_epi_error.append(0)
-    #         dpvo_epi_error.append(0)
-    #         wham_epi_error.append(0)
-    #         index.append(elm)
-    #         print('no matches for frame', i)
-
-    # pth_root = f"output/tracker/{args.subject}_{args.sequence}"
-    # if args.smooth_wham_cam:
-    #     path = f"{pth_root}_smooth_wham_cam"
-    # else:
-    #     path = pth_root
-
-
-    # # === Plot 1: Epipolar Errors === #
-    # p = path+"_epipolor_distance.png"
-    # plt.figure(figsize=(10, 5))
-    # plt.plot(index, gt_epi_error, label='GT', marker='o')
-    # plt.plot(index, dpvo_epi_error, label='DPVO', marker='o')
-    # plt.plot(index, wham_epi_error, label='WHAM', marker='o')
-
-    # plt.xlabel('Frame Index')
-    # plt.ylabel('Epipolar Error (pixels)')
-    # plt.title('Epipolar Error Over Time')
-    # plt.legend()
-    # plt.grid(True)
-    # plt.tight_layout()
-    # plt.savefig(p)
-    # print("Epipolar error plot saved to", p)
-
-    # # === Plot 2: Confidence and Keypoints === #
-    # p = path +"_keypoints.png"
-    # plt.figure(figsize=(10, 5))
-    # plt.plot(index, conf, label="Confidence", marker="o")
-    # plt.plot(index, num_keypoints, label="# Keypoints", marker="o")
-
-    # plt.xlabel('Frame Index')
-    # plt.ylabel('Confidence / Keypoints')
-    # plt.title('Detection Confidence and Keypoints Over Time')
-    # plt.legend()
-    # plt.grid(True)
-    # plt.tight_layout()
-    # plt.savefig(p)
-    # print("Confidence/keypoints plot saved to", p)
-
-
-    # df = pd.DataFrame({
-    #     'frame_index': index,          # frame indices (same length as num_keypoints)
-    #     'num_keypoints': num_keypoints,
-    #     'confidence': conf,
-    #     'gt_epipolar_loss': gt_epi_error,
-    #     'dpvo_epipolar_loss': dpvo_epi_error,
-    #     'wham_epipolar_loss': wham_epi_error
-    # })
-
-    # # Build file path (matching the naming from the plots)
-    # csv_path = f"{path}.csv"
-    # df.to_csv(csv_path, index=False)
-
-    # print("Saved num_keypoints to", csv_path)
 
     print('done')
 
