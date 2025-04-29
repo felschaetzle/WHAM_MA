@@ -157,13 +157,98 @@ class CustomSMPLify():
         init_pred['wham_cam'] = extrinsics
         
         return init_pred
+
+    def joint_optimization(self, init_pred, keypoints, bbox, extrinsics, cam_intrinsics):
+        print("Jointly optimizing SMPL and camera extrinsics ...")
+        def to_params(param):
+            return param.requires_grad_(True)
     
+        pose = init_pred['poses_body'].clone()
+        transl_world = init_pred['trans_world'].clone()
+        # poses_root_world = init_pred['poses_root_world'].clone()
+        poses_root_world = matrix_to_rotation_6d(init_pred['poses_root_world'])
+        
+        rot = extrinsics.squeeze(0)[:,:3,:3]
+        t = extrinsics.squeeze(0)[ :, :3, 3]
+        c = -rot.transpose(1, 2) @ t.unsqueeze(-1)  # [T, 3, 1]
+        c = c.squeeze(-1).contiguous()
+
+        rot_6d = matrix_to_rotation_6d(rot)
+
+
+        params = [to_params(transl_world), to_params(poses_root_world), to_params(pose), to_params(rot_6d), to_params(c)]
+        # opt_params = [params[0], params[3], params[4]]
+        optimizer = torch.optim.LBFGS(
+            params, 
+            lr=self.lr, 
+            max_iter=self.num_iters, 
+            line_search_fn='strong_wolfe')
+        
+        loss_fn = CustomSMPLifyLoss(self.res, cam_intrinsics, device=self.device, extrinsics=extrinsics)
+        
+        closure = loss_fn.create_joint_opt_closure(optimizer,
+                    self.smpl, 
+                    params,
+                    bbox,
+                    keypoints,
+                    init_pred,
+                    joint_opt=True
+                    )
+        
+        for j in (j_bar := tqdm(range(self.num_steps), leave=False)):
+            optimizer.zero_grad()
+            loss = optimizer.step(closure)
+            msg = f'Loss: {loss.item():.1f}'
+            # print(j, msg)
+            j_bar.set_postfix_str(msg)
+
+        print(f"Final joint opt loss: {loss.item():.1f}")
+
+        opt_params = [params[3], params[4]]
+
+        optimizer = torch.optim.LBFGS(
+            opt_params, 
+            lr=self.lr, 
+            max_iter=self.num_iters, 
+            line_search_fn='strong_wolfe')
+        
+        closure = loss_fn.create_cam_smooth_closure(optimizer,
+                    self.smpl, 
+                    params,
+                    bbox,
+                    keypoints,
+                    init_pred,
+                    joint_opt=True
+                    )
+        
+        for j in (j_bar := tqdm(range(10), leave=False)):
+            optimizer.zero_grad()
+            loss = optimizer.step(closure)
+            msg = f'Loss: {loss.item():.1f}'
+            # print(j, msg)
+            j_bar.set_postfix_str(msg)
+
+
+        init_pred['trans_world'] = params[0].detach()
+        init_pred['poses_root_world'] = rotation_6d_to_matrix(params[1].detach())
+        init_pred['poses_body'] = params[2].detach()
+
+        ext = torch.from_numpy(np.eye(4)[None].repeat(pose.shape[0], axis=0)).float().to(self.device)
+        Rmat = rotation_6d_to_matrix(params[3].detach())
+        ext[:, :3, :3] = Rmat
+
+        c = params[4].detach().unsqueeze(-1)
+        t = (-Rmat @ c).squeeze(-1)
+        ext[:, :3, 3] = t
+        init_pred['optimized_cam'] = ext
+        
+        return init_pred
+        
 def optimization_upper_bound(init_pred, keypoints, bbox,
                                                   gt_extrinsics, cam_intrinsics,
                                                   smpl, device,
                                                   length, res):
   
-    # Create an instance of CustomSMPLify
     s = 50
     custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=s, res=res, device=device)
     
@@ -204,64 +289,14 @@ def optimization_baseline(init_pred, keypoints, bbox,
     # Copy the initial predictions to update them progressively.
     current_pred = {k: v.clone() for k, v in init_pred.items()}
     
-    optimized_pred_window = custom_smplify.fit(
+    optimized_pred_window = custom_smplify.joint_optimization(
         current_pred,
         keypoints,
         bbox,
-        extrinsics=extrinsics,
-        cam_intrinsics=cam_intrinsics
+        extrinsics,
+        cam_intrinsics
     )
     return optimized_pred_window
-
-"""    b = False
-    for window_end in range(window_step, length + window_step, window_step):
-        custom_smplify.num_steps = s
-        window_start = window_end - window_size
-        window_start = max(0, window_start)
-        if b:
-            break
-        # if window_end % 100 == 0:
-        #     custom_smplify.num_steps *= 2
-        if (window_end >= length): # or window_end > 500:
-            # b = True
-            window_end = length
-
-            custom_smplify.num_steps *= 2
-            window_start = 0
-
-        print(f"\n===== Optimizing frames {window_start}-{window_end} =====")
-        # Slice the data for the current window.
-        pred_window = {}
-        pred_window['cam'] = current_pred['cam'][:,window_start:window_end,:].clone()
-        pred_window['poses_body'] = current_pred['poses_body'][window_start:window_end,:].clone()
-        pred_window['betas'] = current_pred['betas'][:,window_start:window_end,:].clone()
-        
-        pred_window['trans_world'] = current_pred['trans_world'][window_start:window_end,:].clone()
-        pred_window['poses_root_world'] = current_pred['poses_root_world'][window_start:window_end,:].clone()
-        pred_window['poses_root_cam'] = current_pred['poses_root_cam'][window_start:window_end,:].clone()
-
-        keypoints_window = keypoints[window_start:window_end]
-        bbox_window = bbox[:,window_start:window_end,:]
-        extrinsics_window = extrinsics[:,window_start:window_end,:,:]
-        
-        # Run optimization on the current window.
-        optimized_pred_window = custom_smplify.fit(
-            pred_window,
-            keypoints_window,
-            bbox_window,
-            extrinsics=extrinsics_window,
-            cam_intrinsics=cam_intrinsics
-        )
-
-        # Update the current predictions with the optimized values.
-        current_pred['trans_world'][window_start:window_end] = optimized_pred_window['trans_world']
-        current_pred['poses_root_world'][window_start:window_end] = optimized_pred_window['poses_root_world']
-        current_pred['poses_body'][window_start:window_end] = optimized_pred_window['poses_body']
-
-    print('Optimization complete.')
-
-    return current_pred
-"""
 
 def W_MPJPE_align_sequentially(pred, bbox, res, cam_intrinsics, smpl, device, extrinsics, window_size=1):
     

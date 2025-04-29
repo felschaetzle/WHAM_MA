@@ -25,7 +25,7 @@ from configs.config import parse_args
 
 from scripts.align_emdb import align_and_compute_metrics
 from scripts.visualize_cam_path import invert_camera_poses, get_camera_position
-
+from scripts.extrinsics_classifier import extrinsic_classifier
 
 def run(cfg,
         args,
@@ -116,43 +116,63 @@ def run(cfg,
     res = torch.from_numpy(wham_raw['res']).float().to(cfg.DEVICE)
 
     kwargs = {}
-    kwargs['bbox'] = bbox
-    kwargs['res'] = res
+    # bbox = bbox
+    # res = res
 
+    if args.load_debug:
+        debug_res = joblib.load(f"output/emdb2/debug/{args.sequence}.pkl")
+        for key, _ in pred.items():
+            pred[key] = debug_res[key]
+
+        extrinsics_init = debug_res["extrinsics"]
+        gt_intrinsics = debug_res['intrinsics']
+        input_keypoints = debug_res['input_keypoints']
+        results['trans_world_align'] = debug_res['trans_world_align']
+        results['pose_world_align'] = debug_res['pose_world_align'] 
+
+        results['dpvo_extrinsics'] = debug_res['dpvo_extrinsics']
+        results['wham_cam'] = debug_res['wham_cam']
+        results['extrinsics_init'] = debug_res["extrinsics"].squeeze(0).clone()
+
+
+        pred = optimization_baseline(
+            pred, input_keypoints, bbox,
+            extrinsics_init, gt_intrinsics,
+            smpl, cfg.DEVICE, length, res[0,:])
 
     if not args.use_gt_betas:
         # Average betas
         pred['betas'] = torch.mean(pred['betas'], dim=1, keepdim=True).repeat(1, pred['betas'].shape[1], 1)
 
-    pred = W_MPJPE_align(pred, kwargs['bbox'], kwargs['res'][0], gt_intrinsics, smpl,
-                cfg.DEVICE, gt_extrinsics)
+    if not args.load_debug:
+        pred = W_MPJPE_align(pred, bbox, res[0], gt_intrinsics, smpl,
+            cfg.DEVICE, gt_extrinsics)
 
-    pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
-    pred_body_pose_aligned = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
+        pred_root_world_aligned = matrix_to_axis_angle(pred['poses_root_world']).cpu().numpy().reshape(-1, 3)
+        pred_body_pose_aligned = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
 
-    pred_pose_world_aligned = np.concatenate((pred_root_world_aligned, pred_body_pose_aligned), axis=-1)
-    results['trans_world_align'] = pred['trans_world'].cpu().squeeze(0).numpy()
-    results['pose_world_align'] = pred_pose_world_aligned
+        pred_pose_world_aligned = np.concatenate((pred_root_world_aligned, pred_body_pose_aligned), axis=-1)
+        results['trans_world_align'] = pred['trans_world'].cpu().squeeze(0).numpy()
+        results['pose_world_align'] = pred_pose_world_aligned
 
     if args.upper_bound:
         # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
         kwargs["gt_extrinsics"] = gt_extrinsics
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
         pred = optimization_upper_bound(
-            pred, input_keypoints, kwargs['bbox'],
+            pred, input_keypoints, bbox,
             gt_extrinsics[:,gt_data['good_frames_mask']], gt_intrinsics,
-            smpl, cfg.DEVICE, length, kwargs['res'][0,:])
+            smpl, cfg.DEVICE, length, res[0,:])
     
-    if args.baseline:
+    if args.baseline and not args.load_debug:
         print("Get WHAM CAM")
 
         # Compute CAM from WHAM using intrinsics and 2d to 3d correspondence
         output = smpl.forward_align(pred['poses_body'], pred['betas'], cam_intrinsics=gt_intrinsics, 
-                    bbox=bbox, res=kwargs['res'][:,0], trans_opt=pred['trans_world'], global_orient_opt=pred['poses_root_world'], offset=True)
+                    bbox=bbox, res=res[:,0], trans_opt=pred['trans_world'], global_orient_opt=pred['poses_root_world'], offset=True)
         joints_3d = output.joints.reshape(*pred['cam'].shape[:2], -1, 3).squeeze(0)[:,:17,:].clone().cpu().numpy()
 
         intrins = gt_intrinsics.squeeze(0).cpu().numpy()
-
 
         input_keypoints = eval_loader.dataset.labels['kp2d'][emdb_sequence_index][1:,:,:].to(cfg.DEVICE)
         
@@ -215,11 +235,10 @@ def run(cfg,
         pred['wham_cam'] = wham_extrinsics
         results['wham_cam_init'] = wham_extrinsics.clone().squeeze(0).cpu().numpy()
 
-        custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=50, res=res, device=cfg.DEVICE)
+        custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=10, res=res, device=cfg.DEVICE)
         pred = custom_smplify.smooth_extrinsics(pred, input_keypoints, bbox, wham_extrinsics, gt_intrinsics)
-
-        results['wham_cam'] = pred['wham_cam'].squeeze(0).cpu().numpy()
-
+        wham_extrinsics = pred['wham_cam']
+        results['wham_cam'] = wham_extrinsics.squeeze(0).cpu().numpy()
 
         dpvo_path = _C.PATHS.WHAM_OUTPUT + "/" + args.subject + "_" + args.sequence + "/slam_results_gt_intrinsics.pth"
         dpvo_output = joblib.load(dpvo_path)
@@ -248,11 +267,33 @@ def run(cfg,
         results['dpvo_scale'] = scale
         dpvo_extrinsics = dpvo_extrinsics[gt_data['good_frames_mask']].unsqueeze(0)
         
+        # classify the correct camera for each frame
+        extrinsics_init = extrinsic_classifier(args, wham_extrinsics.cpu().numpy(), dpvo_extrinsics.squeeze(0).cpu().numpy())
+        extrinsics_init = torch.from_numpy(extrinsics_init).float().to(cfg.DEVICE).unsqueeze(0)
+
+        if args.save_debug:
+            debug_res = {}
+            for key, value in pred.items():
+                debug_res[key] = value
+            debug_res["extrinsics"] = extrinsics_init
+            debug_res['intrinsics'] = gt_intrinsics
+            debug_res['input_keypoints'] = input_keypoints
+
+            debug_res['trans_world_align'] = results['trans_world_align']
+            debug_res['pose_world_align'] = results['pose_world_align']
+
+            debug_res['dpvo_extrinsics'] = results['dpvo_extrinsics']
+            debug_res['wham_cam'] = results['wham_cam']
+
+            joblib.dump(debug_res, f"output/emdb2/debug/{args.sequence}.pkl")
+            print("save debug pkl to", f"output/emdb2/debug/{args.sequence}.pkl")
+            return
+
         pred = optimization_baseline(
-            pred, input_keypoints, kwargs['bbox'],
-            dpvo_extrinsics, gt_intrinsics,
-            smpl, cfg.DEVICE, length, kwargs['res'][0,:])
-        
+            pred, input_keypoints, bbox,
+            extrinsics_init, gt_intrinsics,
+            smpl, cfg.DEVICE, length, res[0,:])
+    
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
 
@@ -264,21 +305,21 @@ def run(cfg,
     pred_root_world_init = matrix_to_axis_angle(pred['poses_root_world_init']).cpu().numpy().reshape(-1, 3)
     results['poses_root_world_init'] = pred_root_world_init
 
-
     results['pose_world'] = pred_pose_world
     results['poses_root_cam'] = pred_pose_cam
     results['trans_world'] = pred['trans_world'].cpu().squeeze(0).numpy()
     results['trans_world_init'] = pred['trans_world_init'].cpu().squeeze(0).numpy()
     results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
-    results['bbox'] = kwargs['bbox'].cpu().numpy()
+    results['bbox'] = bbox.cpu().numpy()
     results['cam'] = pred['cam'].cpu().numpy()
-    results['res'] = kwargs['res'][0].cpu().numpy()
-    
+    results['res'] = res[0].cpu().numpy()
 
+    results['optimized_cam'] = pred['optimized_cam'].cpu().numpy()
+    
     if args.upper_bound:
         if args.use_gt_betas:
             pth = osp.join(output_pth, "upper_bound_gt_betas.pkl")
-        else:
+        else: 
             pth = osp.join(output_pth, "upper_bound.pkl")
         joblib.dump(results, pth)
         print("Save results to ", pth)

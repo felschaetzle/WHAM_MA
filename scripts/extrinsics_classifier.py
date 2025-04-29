@@ -8,13 +8,16 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from configs.config import parse_args
 from scripts.custom_utils import get_sequence_root
+
+sys.path.append("/home/felix/WHAM_MA/scripts")
+
 from superglue_tracker import get_fundamental_matrix, compute_epipolar_lines_batch, epipolar_distances_batch
 from glob import glob
 import os
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-
+import cv2
 
 
 import numpy as np
@@ -41,7 +44,7 @@ def stitch_with_relatives(windows: list,
                           decisions: list,
                           dpvo_ext: np.ndarray,
                           wham_ext: np.ndarray,
-                          gt_ext) -> np.ndarray:
+                          tracker_Rt=None):
     """
     windows:   List of (start, end) frame‐ranges, [start,end) covering [0..N)
     decisions: List of bool, same length as windows:
@@ -59,7 +62,6 @@ def stitch_with_relatives(windows: list,
     # 1) Precompute the per‐frame deltas for each pipeline
     rel_dpvo = compute_frame_relatives(dpvo_ext)   # shape (N-1,4,4)
     rel_wham = compute_frame_relatives(wham_ext)
-    rel_gt = compute_frame_relatives(gt_ext)
 
     # 2) Build a bool array per‐relative‐transform telling us which pipeline to use
     chosen_dpvo = np.zeros(N-1, dtype=bool)
@@ -77,34 +79,72 @@ def stitch_with_relatives(windows: list,
     init_dpvo = decisions[0]
     global_ext[0] = dpvo_ext[0] if init_dpvo else wham_ext[0]
 
+    # tracker_ext = global_ext.copy()
+
     # import ipdb; ipdb.set_trace()
     for i in range(N-1):
-        # if i == 200:
-        #     print('s')
-        # # pick the right delta
-        # if  i < 500:
-        #     Trel =  np.array([[1,0,0,0],
-        #                    [0,1,0,0],
-        #                    [0,0,1,0],
-        #                    [0,0,0,1]])
-        # # if  i >= 100 and i < 200:
-        # #     Trel =  np.array([[1,0,0,0.005],
-        # #                     [0,1,0,0],
-        # #                     [0,0,1,0],
-        # #                     [0,0,0,1]])
-        # #     # Trel = rel_gt[i]
-        # else:
-        #     Trel = rel_gt[i]
+        if i == 30:
+            print("h")
         Trel = rel_dpvo[i] if chosen_dpvo[i] else rel_wham[i]
 
         # chain it
         global_ext[i+1] = Trel @ global_ext[i]
+
+        # tracker_ext[i+1] = tracker_Rt[i] @ tracker_ext[i]
     # import ipdb; ipdb.set_trace()
 
     return global_ext
 
+def compute_relative_RT_from_tracks(kp0, kp1, K,
+                                    conf=None, conf_thresh=0.5,
+                                    method=cv2.RANSAC, prob=0.999,
+                                    threshold=1.0):
+    """
+    Estimate relative pose (R, t) between two frames from tracked pixels.
 
-def run(args):
+    Args:
+        kp0        (M×2 array): pixel coords in frame 0
+        kp1        (M×2 array): corresponding pixel coords in frame 1
+        K          (3×3 array): camera intrinsic matrix
+        conf       (M,)       : optional match confidences
+        conf_thresh float      : only keep matches with conf > conf_thresh
+        method     int         : cv2.FIND_... (RANSAC or LMEDS)
+        prob       float       : RANSAC success probability
+        threshold  float       : inlier threshold (px)
+
+    Returns:
+        R (3×3 array): rotation from frame 0 → frame 1
+        t (3×1 array): translation (unit length, up to scale)
+        mask (N,)     : boolean mask of inlier matches
+    """
+    # optionally filter by confidence
+    if conf is not None:
+        keep = (conf > conf_thresh)
+        kp0_f = kp0[keep]
+        kp1_f = kp1[keep]
+    else:
+        kp0_f = kp0
+        kp1_f = kp1
+
+    if kp0_f.shape[0] < 5:
+        raise ValueError(f"Need ≥5 matches, got {kp0_f.shape[0]}")
+
+    # 1) Estimate Essential matrix E
+    E, inlier_mask = cv2.findEssentialMat(
+        kp0_f, kp1_f, K,
+        method=method,
+        prob=prob,
+        threshold=threshold
+    )
+    # 2) Recover pose: R, t (t is unit norm, scale unknown)
+    _, R, t, pose_mask = cv2.recoverPose(E, kp0_f, kp1_f, K, mask=inlier_mask)
+
+    # combine masks: only those marked as inliers by both steps
+    final_mask = (inlier_mask.ravel() > 0) & (pose_mask.ravel() > 0)
+
+    return R, t, final_mask
+
+def run_test(args):
     tracks_db = joblib.load(f"output/tracker/{args.sequence}.pkl")
     dumy_list = [0]
     dumy_list.extend(tracks_db)
@@ -154,6 +194,7 @@ def run(args):
     keyframe_id_wham = 0
     decision_use_dpvo = []
     windows = []
+    tracker_Rt = []
     
     for i, elm in tqdm(enumerate(frames), total=frames.shape[0]):
         # No matches for frame 0
@@ -171,8 +212,6 @@ def run(args):
             conf = tracks['conf']
 
             if kp0 is not None:
-
-
                 gt_F = get_fundamental_matrix(K, gt_ext[keyframe_id], gt_ext[elm])
                 gt_lines = compute_epipolar_lines_batch(gt_F, kp0)
                 gt_epi_error = epipolar_distances_batch(gt_lines, kp1)
@@ -199,10 +238,18 @@ def run(args):
                 wham_keep_np  = wham_epi_error[wham_epi_error <= wham_thresh]
                 wham_epi_error_list.append(wham_keep_np.mean())
 
-                if dpvo_epi_error.mean() < wham_epi_error.mean() and (tracks['current_frame'] - tracks['key_frame']) > 3:
+                if (dpvo_epi_error.mean() < wham_epi_error.mean() and 
+                (tracks['current_frame'] - tracks['key_frame']) > 10 and 
+                dpvo_epi_error.mean() < 100):
                     decision_use_dpvo.append(True)
                 else:
                     decision_use_dpvo.append(False)
+
+                R_rel, t_rel, m = compute_relative_RT_from_tracks(kp0, kp1, K, conf)
+                T_tracker = np.eye(4)
+                T_tracker[:3,:3] = R_rel
+                T_tracker[:3, 3] = t_rel.reshape((3,))
+                tracker_Rt.append(T_tracker)
             else:
                 decision_use_dpvo.append(False)
                 wham_epi_error_list.append(0)
@@ -215,19 +262,17 @@ def run(args):
             else:
                 windows.append((keyframe_id_wham, i))
 
-
-
-
-
             if i < length - 1:
                 keyframe_id = tracks_db[i+1]['key_frame']
                 keyframe_id_wham = int(np.where(frames == keyframe_id)[0])
 
-    print(decision_use_dpvo)
-    print(windows)
-    camera_init = stitch_with_relatives(windows, decision_use_dpvo, dpvo_ext, wham_ext, gt_ext)
+
+    print(f"{sum(decision_use_dpvo)/len(decision_use_dpvo)}% of {len(decision_use_dpvo)} windows use DPVO")
+    # print(windows)
+    camera_init = stitch_with_relatives(windows, decision_use_dpvo, dpvo_ext, wham_ext, gt_ext, tracker_Rt)
 
     baseline['camera_extinsics_init'] = camera_init
+    # baseline['tracker_extrinsics'] = tracker_ext
 
     joblib.dump(baseline, wham_root+'/baseline_gt_betas.pkl')
 
@@ -249,6 +294,106 @@ def run(args):
 
     print(f"Mean WHAM {np.nanmean(wham_epi_error_list)}, DPVO {np.nanmean(dpvo_epi_error_list)}")
 
+def extrinsic_classifier(args, wham_ext, dpvo_ext):
+    tracks_db = joblib.load(f"output/tracker/{args.sequence}.pkl")
+    dumy_list = [0]
+    dumy_list.extend(tracks_db)
+    tracks_db = dumy_list.copy()
+
+    root = get_sequence_root(args, gt=True)
+    image_dir = Path(root) / "images"  # Adjust this path as needed
+     # replace with your actual path
+    image_paths = sorted(image_dir.glob("*.jpg"))  # or *.jpg if needed
+    assert len(image_paths) >= 2, "Need at least 2 images to match"
+
+    gt_data_pth = glob(os.path.join(root,"*.pkl"))[0]
+    
+    print(f"Process sequence: {args.sequence}")
+
+    gt_data = joblib.load(gt_data_pth)
+    K = gt_data['camera']['intrinsics'] 
+    frame_mask = gt_data['good_frames_mask']
+
+    index = []
+
+    conf = []
+
+    length = frame_mask.sum()
+    # length = 300
+    frames = np.array(range(len(image_paths)))[frame_mask]
+    
+    if dpvo_ext.shape[0] != frame_mask.sum():
+        dpvo_ext = dpvo_ext[frames]
+
+    keyframe_id = 0
+    keyframe_id_wham = 0
+    decision_use_dpvo = []
+    windows = []
+    tracker_Rt = []
+    
+    for i, elm in tqdm(enumerate(frames), total=frames.shape[0]):
+        # No matches for frame 0
+        if i == 0:
+            continue
+
+        if i == length-1 or tracks_db[i+1]["key_frame"] != keyframe_id:
+            tracks = tracks_db[i]
+
+            keyframe_id = tracks['key_frame']
+            keyframe_id_wham = int(np.where(frames == keyframe_id)[0])
+    
+            kp0 = tracks['kp0']
+            kp1 = tracks['kp1']
+            conf = tracks['conf']
+
+            if kp0 is not None:
+                dpvo_F = get_fundamental_matrix(K, dpvo_ext[keyframe_id_wham], dpvo_ext[i])
+                dpvo_lines = compute_epipolar_lines_batch(dpvo_F, kp0)
+                dpvo_epi_error = epipolar_distances_batch(dpvo_lines, kp1)
+
+                wham_F = get_fundamental_matrix(K, wham_ext[keyframe_id_wham], wham_ext[i])
+                wham_lines = compute_epipolar_lines_batch(wham_F, kp0)
+                wham_epi_error = epipolar_distances_batch(wham_lines, kp1)
+
+                percentile = 50
+
+                dpvo_thresh   = np.percentile(dpvo_epi_error, percentile)                            # median
+                dpvo_keep_np  = dpvo_epi_error[dpvo_epi_error <= dpvo_thresh]
+
+                wham_thresh   = np.percentile(wham_epi_error, percentile)                            # median
+                wham_keep_np  = wham_epi_error[wham_epi_error <= wham_thresh]
+
+                if (dpvo_keep_np.mean() < wham_keep_np.mean() and 
+                (tracks['current_frame'] - tracks['key_frame']) > 10 and 
+                dpvo_keep_np.mean() < 100):
+                    decision_use_dpvo.append(True)
+                else:
+                    decision_use_dpvo.append(False)
+
+                # R_rel, t_rel, m = compute_relative_RT_from_tracks(kp0, kp1, K, conf)
+                # T_tracker = np.eye(4)
+                # T_tracker[:3,:3] = R_rel
+                # T_tracker[:3, 3] = t_rel.reshape((3,))
+                # tracker_Rt.append(T_tracker)
+            else:
+                decision_use_dpvo.append(False)
+
+            if i < length - 1:
+                windows.append((keyframe_id_wham, i))
+            else:
+                windows.append((keyframe_id_wham, i))
+
+            if i < length - 1:
+                keyframe_id = tracks_db[i+1]['key_frame']
+                keyframe_id_wham = int(np.where(frames == keyframe_id)[0])
+
+
+    print(f"{(sum(decision_use_dpvo)/len(decision_use_dpvo))*100}% of {len(decision_use_dpvo)} windows use DPVO")
+    # print(windows)
+    camera_init = stitch_with_relatives(windows, decision_use_dpvo, dpvo_ext, wham_ext)
+
+    return camera_init
+
 if __name__ == "__main__":
-    cfg, cfg_file, args = parse_args(test=True)
-    run(args)
+    cfg, cfg_file, args = parse_args(test=True) 
+    run_test(args)

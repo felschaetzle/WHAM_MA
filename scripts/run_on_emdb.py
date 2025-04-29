@@ -10,7 +10,7 @@ def execute_tracker(sub_id, seq_id, args=None):
 	try:
 		command = [
 			"python", 
-			"scripts/superglue_tracker_test.py", 
+			"scripts/superglue_tracker.py", 
 			"--subject",
 			sub_id,
 			"--sequence",
@@ -117,14 +117,15 @@ def main():
 			seq = subject_id + "_" + sequence_id
 			emdb2_sequence = emdb2['vid']
 			if find_substring(seq, emdb2_sequence) is None:
-				print(f"Skipping {subject_id} {sequence_id} because it is not in emdb2")	
+				# print(f"Skipping {subject_id} {sequence_id} because it is not in emdb2")	
 				continue
-			
+
+			if int(sequence_id) == 35 or int(sequence_id) == 36 or int(sequence_id) == 79 or int(sequence_id) == 80:
 			# if len(os.listdir("output/emdb2/"+subject_id+"_"+sequence_id)) == 9:
 			# 	print("Skipping", subject_id, sequence_id, "because it is already processed")
 			# 	continue
 
-			print(subject_id, sequence_id)
+				print(subject_id, sequence_id)
 
 			# execute_demo(subject_id, sequence_id)
 			# execute_demo(subject_id, sequence_id, ['--use_gt_betas'])
@@ -136,7 +137,7 @@ def main():
 			# execute_compute_metrics(subject_id, sequence_id)
 			# execute_compute_metrics(subject_id, sequence_id, ["--baseline"])
 
-			execute_tracker(subject_id, sequence_id)
+				execute_tracker(subject_id, sequence_id)
 
 		else:
 			print("FAIL!")
