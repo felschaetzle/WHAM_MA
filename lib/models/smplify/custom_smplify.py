@@ -145,7 +145,7 @@ class CustomSMPLify():
                     opt=1
                     )
         
-        for j in (j_bar := tqdm(range(10), leave=False)):
+        for j in (j_bar := tqdm(range(2), leave=False)):
             optimizer.zero_grad()
             loss = optimizer.step(closure)
             msg = f'Loss: {loss.item():.1f}'
@@ -175,17 +175,22 @@ class CustomSMPLify():
         # poses_root_world = init_pred['poses_root_world'].clone()
         poses_root_world = matrix_to_rotation_6d(init_pred['poses_root_world'].clone())
         
-        rot = extrinsics.squeeze(0)[:,:3,:3]
-        t = extrinsics.squeeze(0)[ :, :3, 3]
-        c = -rot.transpose(1, 2) @ t.unsqueeze(-1)  # [T, 3, 1]
-        c = c.squeeze(-1).contiguous()
-
-        rot_6d = matrix_to_rotation_6d(rot)
+        # rot = extrinsics.squeeze(0)[:,:3,:3]
+        # t = extrinsics.squeeze(0)[ :, :3, 3]
+        # c = -rot.transpose(1, 2) @ t.unsqueeze(-1)  # [T, 3, 1]
+        # c = c.squeeze(-1).contiguous()
+        # rot_6d = matrix_to_rotation_6d(rot)
 
         scale = torch.tensor([1.0]).to(self.device)
 
-        # params = [to_params(transl_world), to_params(poses_root_world), to_params(pose), to_params(rot_6d), to_params(c), to_params(scale)]
-        # opt_params = [params[0], params[3], params[4], params[5]]
+        extrinsics_rel = compute_frame_relatives(extrinsics.squeeze(0).cpu().numpy())
+        extrinsics_rel = torch.from_numpy(extrinsics_rel).float().to(self.device)
+
+        params = [to_params(transl_world), to_params(poses_root_world), to_params(pose), to_params(extrinsics_rel), extrinsics[0,0], to_params(scale)]
+
+        extrinsics_res = extrinsics.squeeze(0).clone()
+        
+        # opt_params = [params[0]]
         # optimizer = torch.optim.LBFGS(
         #     opt_params, 
         #     lr=self.lr, 
@@ -213,7 +218,7 @@ class CustomSMPLify():
 
         # print(f"Final joint opt loss stage 1: {loss.item():.1f}")
 
-        # opt_params = [params[3], params[4], params[5]]
+        # opt_params = [params[3], params[4]]
 
         # optimizer = torch.optim.LBFGS(
         #     opt_params, 
@@ -232,7 +237,7 @@ class CustomSMPLify():
         #             joint_opt=2
         #             )
         
-        # for j in (j_bar := tqdm(range(self.num_steps/5), leave=False)):
+        # for j in (j_bar := tqdm(range(10), leave=False)):
         #     optimizer.zero_grad()
         #     loss = optimizer.step(closure_2)
         #     msg = f'Loss: {loss.item():.1f}'
@@ -249,11 +254,11 @@ class CustomSMPLify():
         #     line_search_fn='strong_wolfe')
         
         # closure_3 = loss_fn.create_joint_opt_closure(optimizer,
-        #             self.smpl, 
-        #             params,
-        #             bbox,
-        #             keypoints,
-        #             init_pred,
+                    # self.smpl, 
+                    # params,
+                    # bbox,
+                    # keypoints,
+                    # init_pred,
         #             kp_windows,
         #             kp_tracks,
         #             joint_opt=3
@@ -271,18 +276,18 @@ class CustomSMPLify():
         kps0 = kp_tracks[0]
         kps1 = kp_tracks[1]
 
-        rel_all = compute_frame_relatives(extrinsics.squeeze(0).cpu().numpy())
-        rel_all = torch.from_numpy(rel_all).float().to(self.device)
+        # rel_all = compute_frame_relatives(extrinsics.squeeze(0).cpu().numpy())
+        # rel_all = torch.from_numpy(rel_all).float().to(self.device)
 
         for i, window in enumerate(kp_windows):
             # Get the current window's R and t
-
+            print("Window: ", window)
             start = window[0]
             end = window[1]
             extrinsics_window = extrinsics.squeeze(0)[start:end+1]
 
             if end - start > 10:
-                rel = rel_all[start:end]
+                # rel = extrinsics_rel[start:end]
                 T_start = extrinsics_window[0]
                 T_end = extrinsics_window[-1]
 
@@ -290,23 +295,24 @@ class CustomSMPLify():
                 kp0_i = kps0[i]
                 kp1_i = kps1[i]
 
-                kp0_i = torch.from_numpy(kp0_i).float().to(rot.device)
-                kp1_i = torch.from_numpy(kp1_i).float().to(rot.device)
+                kp0_i = torch.from_numpy(kp0_i).float().to(self.device)
+                kp1_i = torch.from_numpy(kp1_i).float().to(self.device)
 
                 F = get_fundamental_matrix_torch(K, T_end, T_start)
                 lines = compute_epipolar_lines_batch_torch(F, kp0_i)
                 epi_error = epipolar_distances_batch_torch(lines, kp1_i)
 
-                quantile = 30/100
+                quantile = 50/100
 
                 thresh   = torch.quantile(epi_error, quantile)                            # median
                 epi_keep  = epi_error[epi_error <= thresh]
 
                 error_i = epi_keep.mean()
 
-                if error_i < 100:
-                    opt_params = [to_params(rel)]
+                if error_i < 50:
 
+                    # params = [to_params(transl_world), to_params(poses_root_world), to_params(pose), to_params(rel), extrinsics[0,0], to_params(scale)]
+                    opt_params = [params[0], params[3]]
                     optimizer = torch.optim.LBFGS(
                         opt_params, 
                         lr=self.lr, 
@@ -314,36 +320,39 @@ class CustomSMPLify():
                         line_search_fn='strong_wolfe')
                     
                     closure_epi = loss_fn.create_epipolar_opt_closure(optimizer,
-                                opt_params,
-                                kp0_i,
-                                kp1_i,
-                                cam_intrinsics
-                                )
+                        self.smpl, 
+                        params,
+                        bbox,
+                        keypoints,
+                        init_pred,
+                        kp0_i,
+                        kp1_i,
+                        cam_intrinsics,
+                        window
+                    )
                     
-                    for j in (j_bar := tqdm(range(10), leave=False)):
+                    for j in (j_bar := tqdm(range(5), leave=False)):
                         optimizer.zero_grad()
                         loss = optimizer.step(closure_epi)
                         msg = f'Loss: {loss.item():.1f}'
                         j_bar.set_postfix_str(msg)
                     
-                    rel = opt_params[0].detach()
+                    # rel = opt_params[0].detach()
                 else:
-                    print("Error too large, skipping", error_i)
+                    print("Error too large, skipping", error_i.item())
             else:
                 # If the window is too small, append a large error
-                print("Segemtn to small, skipping", window)
+                print("Segemtn to small, skipping")
 
             for k in range(window[0], window[1]):
-                if k == window[0] or k == window[1]-1:
-                    print("")
                     # print(k, extrinsics[0,k+1].shape, rel[k - window[0]].shape, extrinsics[0,k].shape)
-                extrinsics[0,k+1] = rel[k - window[0]] @ extrinsics[0,k]
+                extrinsics_res[k+1] = extrinsics_rel[k].detach() @ extrinsics_res[k]
 
-        init_pred['optimized_cam'] = extrinsics.squeeze(0)
+        init_pred['optimized_cam'] = extrinsics_res .detach().squeeze(0)
 
-        # init_pred['trans_world'] = params[0].detach()
-        # init_pred['poses_root_world'] = rotation_6d_to_matrix(params[1].detach())
-        # init_pred['poses_body'] = params[2].detach()
+        init_pred['trans_world'] = params[0].detach()
+        init_pred['poses_root_world'] = rotation_6d_to_matrix(params[1].detach())
+        init_pred['poses_body'] = params[2].detach()
 
         # ext = torch.from_numpy(np.eye(4)[None].repeat(pose.shape[0], axis=0)).float().to(self.device)
         # Rmat = rotation_6d_to_matrix(params[3].detach())
@@ -357,7 +366,31 @@ class CustomSMPLify():
 
         # t = (-Rmat @ c).squeeze(-1)
         # ext[:, :3, 3] = t
-        # init_pred['optimized_cam'] = ext
+
+        # scale = params[5].detach()
+        # T_rel = params[3].detach()
+    
+        # T0 = params[4].detach()
+
+        # Ts = [T0]
+
+        # for i in range(T_rel.shape[0]):
+        #     # note: this is out-of-place
+        #     Ts.append(T_rel[i] @ Ts[-1])
+
+        # # now Ts is a list of length N+1, each [4,4]
+        # T = torch.stack(Ts, dim=0)        # [N+1,4,4]
+
+        # rotation = T[:, :3, :3]
+        # translation = T[:, :3, 3]
+        # c = (-rotation @ translation.unsqueeze(-1)).squeeze(-1)
+        # c_origin = c[0]
+        # c = scale*(c - c_origin) + c_origin
+
+        # t = -rotation @ c.unsqueeze(-1) 
+        # T[:, :3, 3] = t.squeeze(-1)
+
+        # init_pred['optimized_cam'] = T
         
         return init_pred
         
@@ -394,7 +427,7 @@ def optimization_baseline(init_pred, keypoints, bbox,
                                                   length, res, kp_windows, kp_tracks):
  
     # Create an instance of CustomSMPLify
-    s = 50
+    s = 10
     custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=s, res=res, device=device)
     
     # get transl and root_pose in gt world frame
