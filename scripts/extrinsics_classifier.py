@@ -330,6 +330,8 @@ def extrinsic_classifier(args, wham_ext, dpvo_ext):
     decision_use_dpvo = []
     windows = []
     tracker_Rt = []
+    track_kp0 = []
+    track_kp1 = []
     
     for i, elm in tqdm(enumerate(frames), total=frames.shape[0]):
         # No matches for frame 0
@@ -364,8 +366,8 @@ def extrinsic_classifier(args, wham_ext, dpvo_ext):
                 wham_keep_np  = wham_epi_error[wham_epi_error <= wham_thresh]
 
                 if (dpvo_keep_np.mean() < wham_keep_np.mean() and 
-                (tracks['current_frame'] - tracks['key_frame']) > 10 and 
-                dpvo_keep_np.mean() < 100):
+                (tracks['current_frame'] - tracks['key_frame']) > 15 and 
+                dpvo_keep_np.mean() < 10):
                     decision_use_dpvo.append(True)
                 else:
                     decision_use_dpvo.append(False)
@@ -380,8 +382,12 @@ def extrinsic_classifier(args, wham_ext, dpvo_ext):
 
             if i < length - 1:
                 windows.append((keyframe_id_wham, i))
+                track_kp0.append(kp0)
+                track_kp1.append(kp1)
             else:
                 windows.append((keyframe_id_wham, i))
+                track_kp0.append(kp0)
+                track_kp1.append(kp1)
 
             if i < length - 1:
                 keyframe_id = tracks_db[i+1]['key_frame']
@@ -392,7 +398,7 @@ def extrinsic_classifier(args, wham_ext, dpvo_ext):
     # print(windows)
     camera_init = stitch_with_relatives(windows, decision_use_dpvo, dpvo_ext, wham_ext)
 
-    return camera_init
+    return camera_init, windows, track_kp0, track_kp1
 
 if __name__ == "__main__":
     cfg, cfg_file, args = parse_args(test=True) 

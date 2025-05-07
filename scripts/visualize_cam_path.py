@@ -189,18 +189,18 @@ def main(args):
     path = glob(os.path.join(sequence_root_wham, method))[0]
     output = joblib.load(path)
 
-    seq = SMPLSequence(
-        output["pose_world"][:,3:],
-        smpl_layer=smpl_layer,
-        poses_root=output["pose_world"][:,:3],
-        betas=output["betas"],
-        trans=output["trans_world"],
-        name="Mesh: Optimized",
-        color = (0.8, 0.2, 0.8, 1),
-    )  
+    # seq = SMPLSequence(
+    #     output["pose_world"][:,3:],
+    #     smpl_layer=smpl_layer,
+    #     poses_root=output["pose_world"][:,:3],
+    #     betas=output["betas"],
+    #     trans=output["trans_world"],
+    #     name="Mesh: Optimized",
+    #     color = (0.8, 0.2, 0.8, 1),
+    # )  
 
     align_seq = SMPLSequence(
-        output["pose_world"][:,3:],
+        output["pose_world_align"][:,3:],
         smpl_layer=smpl_layer,
         poses_root=output["pose_world_align"][:,:3],
         betas=output["betas"],
@@ -209,23 +209,35 @@ def main(args):
         color = (0.2, 0.8, 0.8, 1),
     )   
 
-    init_seq = SMPLSequence(
-        output["pose_world"][:,3:],
-        smpl_layer=smpl_layer,
-        poses_root=output["poses_root_world_init"][:,:3],
-        betas=output["betas"],
-        trans=output["trans_world_init"],
-        name="Mesh: Initialzation (per frame align)",
-        color = (0.2, 0.2, 0.8, 1),
-    )   
+    # init_seq = SMPLSequence(
+    #     output["pose_world"][:,3:],
+    #     smpl_layer=smpl_layer,
+    #     poses_root=output["poses_root_world_init"][:,:3],
+    #     betas=output["betas"],
+    #     trans=output["trans_world_init"],
+    #     name="Mesh: Initialzation (per frame align)",
+    #     color = (0.2, 0.2, 0.8, 1),
+    # )   
 
-    print("dpvo: ", output['dpvo_extrinsics'][0])
+    # print("dpvo: ", output['dpvo_extrinsics'][0])
 
+    # wham_out = joblib.load(os.path.join(sequence_root_wham, "wham_raw_output_gt_betas.pkl"))
+    # wham_seq = SMPLSequence(
+    #     wham_out["pose_world"][:,3:],
+    #     smpl_layer=smpl_layer,
+    #     poses_root=wham_out["pose_world"][:,:3],
+    #     betas=wham_out["betas"],
+    #     trans=wham_out['trans_world'],
+    #     name="Mesh: WHAM",
+    #     color = (0.2, 0.5, 0.8, 1),
+    # )
+
+            
     # Create the viewer
     viewer_size = None
 
     viewer = Viewer(size=viewer_size)
-
+    viewer.scene.add(align_seq)
     # Load 2D information.
     kp2d = data["kp2d"]
     bboxes = data["bboxes"]["bboxes"]
@@ -244,24 +256,6 @@ def main(args):
     intrinsics = np.repeat(intrinsics_raw[np.newaxis, :, :], len(extrinsics), axis=0)
     
     if args.baseline:
-        # dpvo_extrinsics = output['dpvo_extrinsics_unscaled']
-
-        # aux_dpvo = dpvo_extrinsics.cpu() @ extrinsics[0]
-
-        # aux_dpvo_cam_pose = get_camera_position(aux_dpvo)
-
-        # wham_ext = torch.from_numpy(output['wham_cam'])
-        # aux_wham_cam_pose = get_camera_position(wham_ext.squeeze().cpu())
-
-        # scale_check, _, _ = align_pcl(aux_wham_cam_pose, 
-        #                         aux_dpvo_cam_pose[data['good_frames_mask']].float())
-        # scale = output['dpvo_scale']
-        # print(scale)
-        # dpvo_extrinsics[:, :3, 3] *= float(scale)
-        # dpvo_extrinsics = dpvo_extrinsics.cpu() @ extrinsics[0]
-
-        # dpvo_extrinsics = dpvo_extrinsics.cpu().numpy()
-        # print("shape should be same", dpvo_extrinsics.shape)
         dpvo_extrinsics = output['dpvo_extrinsics']
         dpvo_camera = OpenCVCamera(intrinsics[data['good_frames_mask']], dpvo_extrinsics[data['good_frames_mask']][:,:3], cols, rows, viewer=viewer, name="DPVO Camera")
         # viewer.scene.add(dpvo_camera)
@@ -271,24 +265,24 @@ def main(args):
         wham_camera = OpenCVCamera(intrinsics_wham, wham_cam_extrinsics[:,:3], cols, rows, viewer=viewer, name="WHAM Camera")
         # viewer.scene.add(wham_camera)
 
-        opt_cam_extrinsics = output['optimized_cam']
-        intrinsics_wham = np.repeat(intrinsics_raw[np.newaxis, :, :], opt_cam_extrinsics.shape[0], axis=0)
-        opt_camera = OpenCVCamera(intrinsics_wham, opt_cam_extrinsics[:,:3], cols, rows, viewer=viewer, name="Optimized Camera")
-        viewer.scene.add(opt_camera)   
+        # opt_cam_extrinsics = output['optimized_cam']
+        # intrinsics_wham = np.repeat(intrinsics_raw[np.newaxis, :, :], opt_cam_extrinsics.shape[0], axis=0)
+        # opt_camera = OpenCVCamera(intrinsics_wham, opt_cam_extrinsics[:,:3], cols, rows, viewer=viewer, name="Optimized Camera")
+        # viewer.scene.add(opt_camera)   
 
         img_list = list(np.array(image_files)[data['good_frames_mask']])
         
         # Display the images on a billboard.
-        opt_images_bb = Billboard.from_camera_and_distance(
-            opt_camera,
+        wham_images_bb = Billboard.from_camera_and_distance(
+            wham_camera,
             10.0,
             cols,
             rows,
             img_list,
             image_process_fn=drawing_function(kp2d[data['good_frames_mask']], bboxes[data['good_frames_mask']]),
-            name="Image Optimized Camera",
+            name="Image WHAM Camera",
         )
-        viewer.scene.add(opt_images_bb)
+        viewer.scene.add(wham_camera, wham_images_bb)
 
 
     gt_camera = OpenCVCamera(intrinsics, extrinsics[:, :3], cols, rows, viewer=viewer, name="GT Camera")
@@ -305,7 +299,7 @@ def main(args):
     )
     # viewer.scene.add(raw_images_bb, gt_camera)
         
-    viewer.scene.add(gt_smpl_seq, seq, init_seq)
+    viewer.scene.add(gt_smpl_seq)
 
     if args.draw_trajectories:        
         gt_path = LinesTrail(
@@ -316,13 +310,18 @@ def main(args):
             name="Trajectory: GT",
         )
 
-        opt_path = LinesTrail(
-            seq.joints[:, 0],
+        cam_pos = get_camera_position(extrinsics)
+        gt_camera_path = LinesTrail(
+            cam_pos,
             r_base=0.003,
-            color=(0.8, 0.2, 0.8, 0.8),
+            color=(0.8, 0.2, 0.2, 1),
             cast_shadow=False,
-            name="Trajectory: Optimized",
+            name="Camera Trajectory: GT",
         )
+        # if args.upper_bound:
+
+        viewer.scene.add(gt_camera_path)
+
 
         align_path = LinesTrail(
             align_seq.joints[:, 0],
@@ -333,49 +332,49 @@ def main(args):
         )
 
 
-        init_path = LinesTrail(
-            init_seq.joints[:, 0],
-            r_base=0.003,
-            color=(0.2, 0.2, 0.8, 0.8),
-            cast_shadow=False,
-            name="Trajectory: Initialization",
-        )
-
-        cam_pos = get_camera_position(extrinsics)
-        gt_camera_path = LinesTrail(
-            cam_pos,
-            r_base=0.003,
-            color=(0.8, 0.2, 0.2, 1),
-            cast_shadow=False,
-            name="Camera Trajectory: GT",
-        )
-        if args.upper_bound:
-
-            viewer.scene.add(gt_camera_path)
+        # init_path = LinesTrail(
+        #     init_seq.joints[:, 0],
+        #     r_base=0.003,
+        #     color=(0.2, 0.2, 0.8, 0.8),
+        #     cast_shadow=False,
+        #     name="Trajectory: Initialization",
+        # )
+        viewer.scene.add(align_path)
+        # viewer.scene.add(init_path)
 
 
         if args.baseline:
-            # dpvo_pos = get_camera_position(dpvo_extrinsics)
-            # dpvo_cam_path = LinesTrail(
-            #     dpvo_pos,
-            #     r_base=0.003,
-            #     color=(0.2, 0.8, 0.2, 1),
-            #     cast_shadow=False,
-            #     name="Camera Trajectory: DPVO",
-            # )
-            # viewer.scene.add(dpvo_cam_path)
+            dpvo_pos = get_camera_position(dpvo_extrinsics)
+            dpvo_cam_path = LinesTrail(
+                dpvo_pos,
+                r_base=0.003,
+                color=(0.2, 0.8, 0.2, 1),
+                cast_shadow=False,
+                name="Camera Trajectory: DPVO",
+            )
+            viewer.scene.add(dpvo_cam_path)
 
-            # wham_cam_pos = get_camera_position(wham_cam_extrinsics)
-            # wham_cam_path = LinesTrail(
-            #     wham_cam_pos,
-            #     r_base=0.003,
-            #     color=(0.2, 0.5, 0.8, 1),
-            #     cast_shadow=False,
-            #     name="Camera Trajectory: WHAM",
-            # )
-            # viewer.scene.add(wham_cam_path)
+            wham_cam_pos = get_camera_position(wham_cam_extrinsics)
+            wham_cam_path = LinesTrail(
+                wham_cam_pos,
+                r_base=0.003,
+                color=(0.2, 0.5, 0.8, 1),
+                cast_shadow=False,
+                name="Camera Trajectory: WHAM",
+            )
+            viewer.scene.add(wham_cam_path)
 
-            opt_cam_pos = get_camera_position(opt_cam_extrinsics)
+            wham_cam_raw_pos = get_camera_position(output["wham_cam_raw"])
+            wham_cam_raw_path = LinesTrail(
+                wham_cam_raw_pos,
+                r_base=0.003,
+                color=(0.6, 0.5, 0.8, 1),
+                cast_shadow=False,
+                name="Camera Trajectory: WHAM PnP",
+            )
+            viewer.scene.add(wham_cam_raw_path)
+
+            opt_cam_pos = get_camera_position(output['optimized_cam'])
             opt_cam_path = LinesTrail(
                 opt_cam_pos,
                 r_base=0.003,
@@ -385,7 +384,7 @@ def main(args):
             )
             viewer.scene.add(opt_cam_path)
 
-            cam_init_pos = get_camera_position(output['extrinsics_init'].cpu().numpy())
+            cam_init_pos = get_camera_position(output['extrinsics_init'])
             cam_init_path = LinesTrail(
                 cam_init_pos,
                 r_base=0.003,
@@ -395,19 +394,31 @@ def main(args):
             )
             viewer.scene.add(cam_init_path)
 
+
+            # dpvo_scaled_pos = get_camera_position(output['dpvo_extrinsics_scaled'].cpu().numpy())
+            # dpvo_scaled_pos_path = LinesTrail(
+            #     dpvo_scaled_pos,
+            #     r_base=0.003,
+            #     color=(0.8, 0.5, 0.6, 1),
+            #     cast_shadow=False,
+            #     name="Camera Trajectory: dpvo_scaled_pos",
+            # )
+            # viewer.scene.add(dpvo_scaled_pos_path)
+
+
             # viewer.scene.add(gt_camera_path)
 
-        viewer.scene.add(gt_path, opt_path, init_path)
+        viewer.scene.add(gt_path)
 
     # Remaining viewer setup.
-    viewer.set_temp_camera(opt_camera)
+    # viewer.set_temp_camera(opt_camera)
 
     # if args.view_from_camera:
     #     # We view the scene through the camera.
     #     if args.baseline:
     #         viewer.set_temp_camera(dpvo_camera)
     #     else:
-    #         viewer.set_temp_camera(gt_camera)
+    viewer.set_temp_camera(gt_camera)
     # else:
     #     # We center the scene on the first frame of the SMPL sequence.
     #     pass

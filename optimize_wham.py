@@ -379,11 +379,11 @@ def run(cfg,
         extrinsics_init, kp_windows, kp0, kp1 = extrinsic_classifier(args, wham_extrinsics.squeeze(0).cpu().numpy(), dpvo_extrinsics.squeeze(0).cpu().numpy())
         extrinsics_init = torch.from_numpy(extrinsics_init).float().to(cfg.DEVICE).unsqueeze(0)
         kp_tracks = (kp0, kp1)
-        results['extrinsics_init'] = extrinsics_init.squeeze(0).cpu().numpy()
+        results['extrinsics_init'] = extrinsics_init.clone().squeeze(0).cpu().numpy()
 
-        pth = osp.join(output_pth, "baseline_gt_betas.pkl")
-        joblib.dump(results, pth)
-        return
+        # pth = osp.join(output_pth, "baseline_gt_betas.pkl")
+        # joblib.dump(results, pth)
+        # return
         if args.save_debug:
             debug_res = {}
             for key, value in pred.items():

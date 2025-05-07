@@ -8,7 +8,7 @@ import cv2
 
 from lib.utils.transforms import matrix_to_rotation_6d, rotation_6d_to_matrix
 # from scripts.extrinsics_classifier import compute_epipolar_lines_batch, epipolar_distances_batch
-from scripts.superglue_tracker import get_fundamental_matrix_torch, compute_epipolar_lines_batch_torch, epipolar_distances_batch_torch
+from scripts.superglue_tracker import get_fundamental_matrix_torch, compute_epipolar_lines_batch_torch, epipolar_distances_batch_torch, get_fundamental_matrix_torch_relative
 
 def gmof(x, sigma=100):
     """
@@ -97,14 +97,14 @@ def compute_epipolar_error(rot, trans, K, kp_tracks, kp_windows):
             lines = compute_epipolar_lines_batch_torch(F, kp0_i)
             epi_error = epipolar_distances_batch_torch(lines, kp1_i)
 
-            quantile = 50/100
+            quantile = 30/100
 
             thresh   = torch.quantile(epi_error, quantile)                            # median
             epi_keep  = epi_error[epi_error <= thresh]
 
             error_i = epi_keep.mean()
 
-            if error_i < 50:
+            if error_i < 100:
                 errors.append(error_i)
             else:
                 errors.append(torch.tensor(0.0, device=rot.device, dtype=float))
@@ -112,7 +112,26 @@ def compute_epipolar_error(rot, trans, K, kp_tracks, kp_windows):
             # If the window is too small, append a large error
             errors.append(torch.tensor(0.0, device=rot.device, dtype=float))
     errors = torch.stack(errors)  # shape [N]
-    return errors.mean()
+    return errors.sum()
+
+def compute_epipolar_error_relative(params, K, kp0_i, kp1_i):
+
+    T_rel = params[0]
+    T = torch.eye(4).float().to(T_rel.device)
+    for i in range(T_rel.shape[0]):
+        T = T_rel[i] @ T
+
+    F = get_fundamental_matrix_torch_relative(K, T)
+    lines = compute_epipolar_lines_batch_torch(F, kp0_i)
+    epi_error = epipolar_distances_batch_torch(lines, kp1_i)
+
+    quantile = 30/100
+
+    thresh   = torch.quantile(epi_error, quantile)                            # median
+    epi_keep  = epi_error[epi_error <= thresh]
+
+    error_i = epi_keep.mean()
+    return error_i
 
 class CustomSMPLifyLoss(torch.nn.Module):
     def __init__(self, 
@@ -379,12 +398,29 @@ class CustomSMPLifyLoss(torch.nn.Module):
             )
 
             loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joint_opt) #, joints3d_cam, joints3d_cam_pred) #, wham_joints_2d)
-            
-            # if joint_opt == 3:
-            #     epipolar_loss = compute_epipolar_error(rotation, translation, self.cam_intrinsics, kp_tracks, kp_windows)                
-            #     loss_dict['epipolar_loss'] = epipolar_loss
+            loss_dict = {}
+            if joint_opt == 3:
+                epipolar_loss = compute_epipolar_error(rotation, translation, self.cam_intrinsics, kp_tracks, kp_windows)                
+                loss_dict['epipolar_loss'] = epipolar_loss
                 
             loss = sum(loss_dict.values())
+            loss.backward()
+            return loss
+        
+        return closure
+    
+    def create_epipolar_opt_closure(self,
+                        optimizer,
+                        opt_params,
+                        kp0_i,
+                        kp1_i,
+                        cam_intrinsics):
+        
+        def closure():
+            optimizer.zero_grad()
+
+            # Compute the epipolar error
+            loss = compute_epipolar_error_relative(opt_params, cam_intrinsics.squeeze(0), kp0_i, kp1_i)
             loss.backward()
             return loss
         

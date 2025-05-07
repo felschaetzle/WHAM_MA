@@ -81,6 +81,86 @@ def filter_keypoints_outside_mask(keypoints, mask):
 
     return keypoints[valid_mask], valid_mask
 
+def skew_torch(v: torch.Tensor) -> torch.Tensor:
+    assert v.ndim == 1 and v.shape[0] == 3
+    # create an empty 3×3 on the same device/dtype
+    S = torch.zeros((3, 3), dtype=v.dtype, device=v.device)
+    S[0, 1] = -v[2]
+    S[0, 2] =  v[1]
+    S[1, 0] =  v[2]
+    S[1, 2] = -v[0]
+    S[2, 0] = -v[1]
+    S[2, 1] =  v[0]
+    return S
+
+def get_fundamental_matrix_torch(
+    K: torch.Tensor,
+    extrinsics_ref: torch.Tensor,
+    extrinsics_frame: torch.Tensor,
+    ) -> torch.Tensor:
+    
+    # invert ref extrinsics to get cam_ref → world
+    cam_ref_to_world = torch.inverse(extrinsics_ref)
+    
+    # relative transform: cam_ref → world → cam_frame
+    rel_pose = extrinsics_frame @ cam_ref_to_world
+    R = rel_pose[:3, :3]
+    t = rel_pose[:3, 3]
+    
+    # essential matrix E = [t]_× R
+    E = skew_torch(t) @ R
+    
+    # fundamental matrix F = K^{-T} E K^{-1}
+    K_inv = torch.inverse(K)
+    F = K_inv.T @ E @ K_inv
+    
+    # normalize (optional but often helps numerically)
+    return F / torch.norm(F)
+
+def get_fundamental_matrix_torch_relative(
+    K: torch.Tensor,
+    rel_pose: torch.Tensor,
+    ) -> torch.Tensor:
+    
+
+    # relative transform: cam_ref → world → cam_frame
+    R = rel_pose[:3, :3]
+    t = rel_pose[:3, 3]
+    
+    # essential matrix E = [t]_× R
+    E = skew_torch(t) @ R
+    
+    # fundamental matrix F = K^{-T} E K^{-1}
+    K_inv = torch.inverse(K)
+    F = K_inv.T @ E @ K_inv
+    
+    # normalize (optional but often helps numerically)
+    return F / torch.norm(F)
+
+def compute_epipolar_lines_batch_torch(
+    F: torch.Tensor,
+    kpts0: torch.Tensor
+) -> torch.Tensor:
+    # make homogeneous coordinates [x, y, 1]
+    ones = torch.ones((kpts0.shape[0], 1), dtype=kpts0.dtype, device=kpts0.device)
+    kpts0_h = torch.cat([kpts0, ones], dim=1)      # (N, 3)
+
+    # compute lines = (F @ kpts0_h.T).T -> (N, 3)
+    lines = (F @ kpts0_h.t()).t()
+
+    # normalize so that sqrt(a^2 + b^2) = 1
+    norms = torch.norm(lines[:, :2], dim=1, keepdim=True)  # (N, 1)
+    return lines / norms
+
+
+def epipolar_distances_batch_torch(
+    lines: torch.Tensor,
+    kpts1: torch.Tensor
+) -> torch.Tensor:
+    a, b, c = lines[:, 0], lines[:, 1], lines[:, 2]
+    u, v     = kpts1[:, 0], kpts1[:, 1]
+    return torch.abs(a * u + b * v + c)
+
 def skew(t):
     """Return the skew-symmetric matrix of a vector t."""
     return np.array([
@@ -164,8 +244,8 @@ def visualize_tracks(n, elm, frame0_data, frame_i_data, kpts0, kpts1, confidence
     )
 
     save_path = f'output/tracker/images_{args.sequence}/' + f"matches_{n:05}_{elm:05}.png"
-    print(f"Save image to: {save_path}")
-    cv2.imwrite(str(save_path), out)
+    # print(f"Save image to: {save_path}")
+    # cv2.imwrite(str(save_path), out)
 
 def run(args):
 
