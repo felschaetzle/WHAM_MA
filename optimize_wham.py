@@ -26,6 +26,17 @@ from configs.config import parse_args
 from scripts.align_emdb import align_and_compute_metrics
 from scripts.visualize_cam_path import invert_camera_poses, get_camera_position
 from scripts.extrinsics_classifier import extrinsic_classifier
+from lib.models.smplify.optimize_camera_scale import optimize_dpvo_trans
+from scipy.optimize import least_squares
+
+def project_pts(rvec, tvec, K, pts3d):
+    R, _ = cv2.Rodrigues(rvec)
+    pts_cam = (R @ pts3d.T) + tvec  # shape (3,N)
+    x = pts_cam[0] / pts_cam[2]
+    y = pts_cam[1] / pts_cam[2]
+    uv = (K @ np.vstack([x, y, np.ones_like(x)]))[:2].T
+    return uv  # shape (N,2)
+
 
 def run(cfg,
         args,
@@ -116,8 +127,6 @@ def run(cfg,
     res = torch.from_numpy(wham_raw['res']).float().to(cfg.DEVICE)
 
     kwargs = {}
-    # bbox = bbox
-    # res = res
 
     if args.load_debug:
         debug_res = joblib.load(f"output/emdb2/debug/{args.sequence}.pkl")
@@ -133,12 +142,14 @@ def run(cfg,
         results['dpvo_extrinsics'] = debug_res['dpvo_extrinsics']
         results['wham_cam'] = debug_res['wham_cam']
         results['extrinsics_init'] = debug_res["extrinsics"].squeeze(0).clone()
-
+ 
+        kp_windows = debug_res['windows']
+        kp_tracks = debug_res['kp_tracks']
 
         pred = optimization_baseline(
             pred, input_keypoints, bbox,
             extrinsics_init, gt_intrinsics,
-            smpl, cfg.DEVICE, length, res[0,:])
+            smpl, cfg.DEVICE, length, res[0,:], kp_windows, kp_tracks)
 
     if not args.use_gt_betas:
         # Average betas
@@ -154,6 +165,7 @@ def run(cfg,
         pred_pose_world_aligned = np.concatenate((pred_root_world_aligned, pred_body_pose_aligned), axis=-1)
         results['trans_world_align'] = pred['trans_world'].cpu().squeeze(0).numpy()
         results['pose_world_align'] = pred_pose_world_aligned
+        results['betas'] = pred['betas'].cpu().squeeze(0).numpy()
 
     if args.upper_bound:
         # kwargs["gt_extrinsics"] = torch.tensor(gt_extrinsics).float().to(cfg.DEVICE).unsqueeze(0)
@@ -188,6 +200,98 @@ def run(cfg,
 
         conf_thresh = 0.5  # or your chosen threshold
 
+        """        
+        # smoothing weights
+        λ_r = 10    # rotational velocity weight
+        λ_t = 0    # translational velocity weight
+        Y_r = 10    # rotational acceleration weight
+        Y_t = 0    # translational acceleration weight
+
+        dist_coeffs = np.zeros((4, 1), dtype=np.float32)
+        WHAM_CAM = []
+
+        # history buffers
+        rvec_prev2 = None
+        tvec_prev2 = None
+        rvec_prev  = None
+        tvec_prev  = None
+
+        for i in range(length):
+            pts_3d = joints_3d[i]
+            pts_2d_full = kp_2d[i]
+            conf = pts_2d_full[:, 2]
+            mask = conf > conf_thresh
+            if mask.sum() < 6:
+                print(f"[Frame {i}] Not enough keypoints—skipping.")
+                continue
+
+            obj_pts = pts_3d[mask].astype(np.float32)
+            img_pts = pts_2d_full[mask, :2].astype(np.float32)
+            K = intrins.astype(np.float64)
+
+            # initial guess
+            if rvec_prev is None:
+                _, rvec_prev, tvec_prev = cv2.solvePnP(obj_pts, img_pts, K, dist_coeffs,
+                                                    flags=cv2.SOLVEPNP_EPNP)
+            x0 = np.concatenate([rvec_prev.ravel(), tvec_prev.ravel()])
+
+            def residuals(x):
+                # unpack
+                r = x[0:3].reshape(3,1)
+                t = x[3:6].reshape(3,1)
+
+                # reprojection residuals
+                proj = project_pts(r, t, K, obj_pts)
+                reproj_err = (proj - img_pts).ravel()
+
+                # velocity (first‐order) smoothness
+                if rvec_prev is None:
+                    vel_r_err = np.zeros(3)
+                    vel_t_err = np.zeros(3)
+                else:
+                    vel_r_err = x[0:3] - rvec_prev.ravel()
+                    vel_t_err = x[3:6] - tvec_prev.ravel()
+                smooth_err = np.hstack([
+                    np.sqrt(λ_r) * vel_r_err,
+                    np.sqrt(λ_t) * vel_t_err
+                ])
+
+                # acceleration (second‐order) smoothness
+                if rvec_prev2 is None:
+                    accel_err = np.zeros(6)
+                else:
+                    accel_r = x[0:3] \
+                            - 2 * rvec_prev.ravel() \
+                            + rvec_prev2.ravel()
+                    accel_t = x[3:6] \
+                            - 2 * tvec_prev.ravel() \
+                            + tvec_prev2.ravel()
+                    accel_err = np.hstack([
+                        np.sqrt(Y_r) * accel_r,
+                        np.sqrt(Y_t) * accel_t
+                    ])
+
+                return np.concatenate([reproj_err, smooth_err, accel_err])
+
+            res = least_squares(residuals, x0, method='lm',
+                                max_nfev=50, xtol=1e-6, ftol=1e-6)
+
+            # extract optimized pose
+            r_opt = res.x[0:3].reshape(3,1)
+            t_opt = res.x[3:6].reshape(3,1)
+
+            # shift history
+            rvec_prev2, rvec_prev = rvec_prev, r_opt.copy()
+            tvec_prev2, tvec_prev = tvec_prev, t_opt.copy()
+
+            # assemble 4×4
+            Rm, _ = cv2.Rodrigues(r_opt)
+            T = np.eye(4, dtype=np.float32)
+            T[:3,:3] = Rm
+            T[:3, 3] = t_opt.squeeze()
+            WHAM_CAM.append(T)
+            """
+        
         for i in range(length):
             pts_3d = joints_3d[i]
             pts_2d_full = kp_2d[i]
@@ -212,10 +316,7 @@ def run(cfg,
                     flags=cv2.SOLVEPNP_ITERATIVE
                 )
             else:
-                success, rvec, tvec = cv2.solvePnP(
-                    pts_3d_valid, pts_2d_valid, K, dist_coeffs,
-                    flags=cv2.SOLVEPNP_ITERATIVE
-                )
+                print("SHIIIT")
 
             if not success:
                 print(f"[Frame {i}] solvePnP failed.")
@@ -233,7 +334,7 @@ def run(cfg,
         WHAM_CAM = np.array(WHAM_CAM)
         wham_extrinsics = torch.from_numpy(WHAM_CAM).float().to(cfg.DEVICE).unsqueeze(0)
         pred['wham_cam'] = wham_extrinsics
-        results['wham_cam_init'] = wham_extrinsics.clone().squeeze(0).cpu().numpy()
+        results['wham_cam_raw'] = wham_extrinsics.clone().squeeze(0).cpu().numpy()
 
         custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=10, res=res, device=cfg.DEVICE)
         pred = custom_smplify.smooth_extrinsics(pred, input_keypoints, bbox, wham_extrinsics, gt_intrinsics)
@@ -254,23 +355,35 @@ def run(cfg,
         dpvo_extrinsics = torch.from_numpy(dpvo_extrinsics).float().to(cfg.DEVICE)
 
         results['dpvo_extrinsics_unscaled'] = dpvo_extrinsics.clone()
+
         aux_dpvo = dpvo_extrinsics @ gt_extrinsics[0,0]
         aux_dpvo_cam_pose = get_camera_position(aux_dpvo.cpu())
         aux_wham_cam_pose = get_camera_position(pred['wham_cam'].squeeze().cpu())
 
-        scale, _, _ = align_pcl(aux_wham_cam_pose.cpu(), aux_dpvo_cam_pose[gt_data['good_frames_mask']])
+        scales = []
+        for i in range(length):
+            if i> 0 and i % 100 == 0:
+                scale, _, _ = align_pcl(aux_wham_cam_pose.cpu()[i-100:i], aux_dpvo_cam_pose[gt_data['good_frames_mask']][i-100:i])
+                scales.append(scale)
+        scale = torch.mean(torch.tensor(scales))
+        
         print("DPVO scale: ", scale)
         dpvo_extrinsics[:, :3, 3] *= float(scale)
         dpvo_extrinsics = dpvo_extrinsics @ gt_extrinsics[0,0]
 
         results['dpvo_extrinsics'] = dpvo_extrinsics.clone().cpu().numpy()
-        results['dpvo_scale'] = scale
+        # results['dpvo_scale'] = scale
         dpvo_extrinsics = dpvo_extrinsics[gt_data['good_frames_mask']].unsqueeze(0)
         
         # classify the correct camera for each frame
-        extrinsics_init = extrinsic_classifier(args, wham_extrinsics.cpu().numpy(), dpvo_extrinsics.squeeze(0).cpu().numpy())
+        extrinsics_init, kp_windows, kp0, kp1 = extrinsic_classifier(args, wham_extrinsics.squeeze(0).cpu().numpy(), dpvo_extrinsics.squeeze(0).cpu().numpy())
         extrinsics_init = torch.from_numpy(extrinsics_init).float().to(cfg.DEVICE).unsqueeze(0)
+        kp_tracks = (kp0, kp1)
+        results['extrinsics_init'] = extrinsics_init.squeeze(0).cpu().numpy()
 
+        pth = osp.join(output_pth, "baseline_gt_betas.pkl")
+        joblib.dump(results, pth)
+        return
         if args.save_debug:
             debug_res = {}
             for key, value in pred.items():
@@ -284,6 +397,8 @@ def run(cfg,
 
             debug_res['dpvo_extrinsics'] = results['dpvo_extrinsics']
             debug_res['wham_cam'] = results['wham_cam']
+            debug_res['windows'] = kp_windows
+            debug_res['kp_tracks'] = kp_tracks
 
             joblib.dump(debug_res, f"output/emdb2/debug/{args.sequence}.pkl")
             print("save debug pkl to", f"output/emdb2/debug/{args.sequence}.pkl")
@@ -292,7 +407,7 @@ def run(cfg,
         pred = optimization_baseline(
             pred, input_keypoints, bbox,
             extrinsics_init, gt_intrinsics,
-            smpl, cfg.DEVICE, length, res[0,:])
+            smpl, cfg.DEVICE, length, res[0,:], kp_windows, kp_tracks)
     
     # ========= Store results ========= #
     pred_body_pose = matrix_to_axis_angle(pred['poses_body']).cpu().numpy().reshape(-1, 69)
