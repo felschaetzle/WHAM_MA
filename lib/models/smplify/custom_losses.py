@@ -205,7 +205,15 @@ class CustomSMPLifyLoss(torch.nn.Module):
                     'reprojection': reprojection_weight * (reprojection_error)
                 }
 
-            elif joint_opt == 3:
+            elif joint_opt == 4:
+                trans_diff = compute_jitter_custom(params[0]).mean()
+
+                loss = {
+                    'reprojection': reprojection_weight * (reprojection_error),
+                    'smooth': smooth_weight * trans_diff,
+                }
+
+            elif joint_opt == 5:
                 # rotation = rotation_6d_to_matrix(params[3])
                 trans_diff = compute_jitter_custom(params[0]).mean() # translation in global coords
 
@@ -226,7 +234,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 loss = {
                     'reprojection': reprojection_weight * (reprojection_error),
                     'smooth': smooth_weight * smooth_error,
-                    'velocity': 10000* vel_loss,
+                    # 'velocity': 10000* vel_loss,
                 }
 
         else:
@@ -357,9 +365,8 @@ class CustomSMPLifyLoss(torch.nn.Module):
                        bbox,
                        input_keypoints,
                        init_pred,
-                       kp_windows,
-                       kp_tracks,
-                       joint_opt=None):
+                       joint_opt=None
+                       ):
         
         def closure():
             optimizer.zero_grad()
@@ -369,35 +376,15 @@ class CustomSMPLifyLoss(torch.nn.Module):
             joints3d = output.joints.reshape(*init_pred['cam'].shape[:2], -1, 3)
 
             scale = params[5]
-            T_rel = params[3]
-        
-            T0 = params[4]
 
-            Ts = [T0]
-
-            for i in range(T_rel.shape[0]):
-                Ts.append(T_rel[i] @ Ts[-1])
-
-            # now Ts is a list of length N+1, each [4,4]
-            T = torch.stack(Ts, dim=0)        # [N+1,4,4]
-
-            rotation = T[:, :3, :3]
-            translation = T[:, :3, 3]
-            c = (-rotation @ translation.unsqueeze(-1)).squeeze(-1)
+            rotation = rotation_6d_to_matrix(params[3])
+            c = params[4].unsqueeze(-1)
             c_origin = c[0]
+            scale = params[5]
             c = scale*(c - c_origin) + c_origin
 
-            t = -rotation @ c.unsqueeze(-1)        
+            t = -rotation @ c        
             translation = t.squeeze(-1)  
-
-            # rotation = rotation_6d_to_matrix(params[3])
-            # c = params[4].unsqueeze(-1)
-            # c_origin = c[0]
-            # scale = params[5]
-            # c = scale*(c - c_origin) + c_origin
-
-            # t = -rotation @ c        
-            # translation = t.squeeze(-1)  
 
             full_joints2d = full_perspective_projection(
                 joints3d,
@@ -406,16 +393,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 translation=translation,
             )
 
-            # loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joint_opt, rotation, c) #, joints3d_cam, joints3d_cam_pred) #, wham_joints_2d)
-            loss_dict = {}
-            # if joint_opt == 3:
-            epipolar_loss = compute_epipolar_error(rotation, translation, self.cam_intrinsics, kp_tracks, kp_windows)      
-            rotation_6d = matrix_to_rotation_6d(rotation)
-            cam_c_diff = compute_jitter_custom(c).mean()
-            cam_R_diff = compute_jitter_custom(rotation_6d).mean()
-            loss_dict['epipolar_loss'] = epipolar_loss
-            loss_dict['smooth'] = (cam_c_diff + cam_R_diff)*10000
-                
+            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joint_opt, rotation, c)
             loss = sum(loss_dict.values())
             loss.backward()
             return loss
@@ -424,53 +402,42 @@ class CustomSMPLifyLoss(torch.nn.Module):
     
     def create_epipolar_opt_closure(self,
                         optimizer,
-                        smpl, 
-                        params,
-                        bbox_,
-                        input_keypoints_,
-                        init_pred,
                         kp0_i,
                         kp1_i,
                         cam_intrinsics,
+                        opt_rel,
+                        params,
+                        smpl,
+                        init_pred,
+                        input_keypoints,
+                        bbox,
                         window,
-                        joint_opt=3):
+                        extrinsics_start):
         
         def closure():
-
             optimizer.zero_grad()
 
-            # torch.autograd.set_detect_anomaly(True)
+            # trans_window = params[0][window[0]:window[1]+1]
+            # global_orient_window = params[1][window[0]:window[1]+1]
+            # pose_window = params[2][window[0]:window[1]+1]
+            # betas_window = init_pred["betas"][window[0]:window[1]+1]
+            # bbox_window = bbox[:,window[0]:window[1]+1]
+            # input_keypoints_window = input_keypoints[window[0]:window[1]+1]
 
-            # window_pose = params[2][window[0]:window[1]].clone()
-            # window_trans = params[0][window[0]:window[1]].clone()
-            # window_rot = params[1][window[0]:window[1]].clone()
-            # window_betas = init_pred['betas'][window[0]:window[1]].clone()
-            # input_keypoints = input_keypoints_[window[0]:window[1]].clone()
-            # bbox = bbox_[:, window[0]:window[1]].clone()
-
-
-            # output = smpl.forward_align(window_pose, window_betas, cam_intrinsics=self.cam_intrinsics, 
-            #                             bbox=bbox, res=self.res, trans_opt=window_trans, global_orient_opt=window_rot, offset=True)
-            
-            # joints3d = output.joints.reshape(1, window_pose.shape[0], -1, 3)
+            # output = smpl.forward_align(pose_window, betas_window, cam_intrinsics=self.cam_intrinsics, 
+            #                             bbox=bbox_window, res=self.res, trans_opt=trans_window, global_orient_opt=global_orient_window, offset=True)
+            # joints3d = output.joints.reshape(1, trans_window.shape[0], -1, 3)
 
             # scale = params[5]
-            # T_rel = params[3]
-        
-            # T0 = params[4]
 
-            # Ts = [T0]
+            # Ts = [extrinsics_start]
 
-            # for i in range(T_rel.shape[0]):
-            #     Ts.append(T_rel[i] @ Ts[-1])
+            # for i in range(opt_rel.shape[0]):
+            #     Ts.append(opt_rel[i] @ Ts[-1])
+            # Ts = torch.stack(Ts)
 
-            # T = torch.stack(Ts, dim=0)  
-            
-            # T = T[window[0] : window[1]].clone()
-
-            # rotation = T[:, :3, :3]
-            # translation = T[:, :3, 3]
-            # c = (-rotation @ translation.unsqueeze(-1)).squeeze(-1)
+            # rotation = Ts[:,:3,:3]      
+            # translation = Ts[:,:3,3]
 
             # full_joints2d = full_perspective_projection(
             #     joints3d,
@@ -479,11 +446,20 @@ class CustomSMPLifyLoss(torch.nn.Module):
             #     translation=translation,
             # )
 
-            # loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joint_opt, rotation, c) #, joints3d_cam, joints3d_cam_pred) #, wham_joints_2d)
+            # scale = bbox_window[..., 2:].unsqueeze(-1) * 200.
+
+            # # Loss 1. Data term
+            # pred_keypoints = full_joints2d[..., :17, :]
+            # joints_conf = input_keypoints_window[..., -1:]
+            # reprojection_error = gmof(pred_keypoints - input_keypoints_window[..., :-1])
+            # reprojection_error = ((reprojection_error * joints_conf) / scale).mean()
+
+
             loss_dict = {}
             # Compute the epipolar error
-            epipolar_loss = compute_epipolar_error_relative(params[3], cam_intrinsics.squeeze(0), kp0_i, kp1_i)
+            epipolar_loss = compute_epipolar_error_relative(opt_rel, cam_intrinsics.squeeze(0), kp0_i, kp1_i)
             loss_dict['epipolar_loss'] = epipolar_loss
+            # loss_dict['reprojection'] = reprojection_error*100
             
             loss = sum(loss_dict.values())
             loss.backward()
