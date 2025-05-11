@@ -207,10 +207,11 @@ class CustomSMPLifyLoss(torch.nn.Module):
 
             elif joint_opt == 4:
                 trans_diff = compute_jitter_custom(params[0]).mean()
-
+                # reprojection_error = gmof(pred_keypoints - input_keypoints[..., :-1], sigma)
+                # reprojection_error = ((reprojection_error * joints_conf) / scale).sum()
                 loss = {
                     'reprojection': reprojection_weight * (reprojection_error),
-                    'smooth': smooth_weight * trans_diff,
+                    # 'smooth': 1 * trans_diff,
                 }
 
             elif joint_opt == 5:
@@ -336,6 +337,10 @@ class CustomSMPLifyLoss(torch.nn.Module):
             t = -rotation @ c        
             translation = t.squeeze(-1)  
 
+            # translation = ext[:, :3, 3]
+            # rotation = ext[:, :3, :3]
+
+
             full_joints2d = full_perspective_projection(
                 joints3d,
                 cam_intrinsics=self.cam_intrinsics,
@@ -365,11 +370,14 @@ class CustomSMPLifyLoss(torch.nn.Module):
                        bbox,
                        input_keypoints,
                        init_pred,
+                       ext=None,
                        joint_opt=None
                        ):
         
         def closure():
             optimizer.zero_grad()
+
+
 
             output = smpl.forward_align(params[2], init_pred['betas'], cam_intrinsics=self.cam_intrinsics, 
                                         bbox=bbox, res=self.res, trans_opt=params[0], global_orient_opt=params[1], offset=True)
@@ -377,14 +385,21 @@ class CustomSMPLifyLoss(torch.nn.Module):
 
             scale = params[5]
 
-            rotation = rotation_6d_to_matrix(params[3])
-            c = params[4].unsqueeze(-1)
-            c_origin = c[0]
-            scale = params[5]
-            c = scale*(c - c_origin) + c_origin
+            if ext is not None:
+                # get rotation and translation from extrinsics matrix
+                rotation = ext[:, :3, :3]
+                translation = ext[:, :3, 3]
+                c = - rotation @ translation.unsqueeze(-1)
+                c = c.squeeze(-1)
+            else:
+                rotation = rotation_6d_to_matrix(params[3])
+                c = params[4].unsqueeze(-1)
+            # c_origin = c[0]
+            # scale = params[5]
+            # c = scale*(c - c_origin) + c_origin
 
-            t = -rotation @ c        
-            translation = t.squeeze(-1)  
+                t = -rotation @ c        
+                translation = t.squeeze(-1)  
 
             full_joints2d = full_perspective_projection(
                 joints3d,
@@ -400,6 +415,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         
         return closure
     
+
     def create_epipolar_opt_closure(self,
                         optimizer,
                         kp0_i,
@@ -412,7 +428,10 @@ class CustomSMPLifyLoss(torch.nn.Module):
                         input_keypoints,
                         bbox,
                         window,
-                        extrinsics_start):
+                        extrinsics_start,
+                        extrinsics_initial,
+                        # trans_window
+                        ):
         
         def closure():
             optimizer.zero_grad()
@@ -428,6 +447,10 @@ class CustomSMPLifyLoss(torch.nn.Module):
             #                             bbox=bbox_window, res=self.res, trans_opt=trans_window, global_orient_opt=global_orient_window, offset=True)
             # joints3d = output.joints.reshape(1, trans_window.shape[0], -1, 3)
 
+            # output = smpl.forward_align(pose_window, betas_window, cam_intrinsics=self.cam_intrinsics, 
+            #                             bbox=bbox_window, res=self.res, trans_opt=init_pred['trans_world'][window[0]:window[1]+1], global_orient_opt=global_orient_window, offset=True)
+            # joints3d_init = output.joints.reshape(1, trans_window.shape[0], -1, 3)
+
             # scale = params[5]
 
             # Ts = [extrinsics_start]
@@ -435,6 +458,46 @@ class CustomSMPLifyLoss(torch.nn.Module):
             # for i in range(opt_rel.shape[0]):
             #     Ts.append(opt_rel[i] @ Ts[-1])
             # Ts = torch.stack(Ts)
+
+            # # local joints
+            # J = joints3d.squeeze(0)
+
+            # # make homogeneous coords: [89,31,4]
+            # ones = torch.ones(J.shape[0], J.shape[1], 1, device=J.device, dtype=J.dtype)
+            # J_hom = torch.cat([J, ones], dim=-1)   # [89,31,4]
+
+            # # for batch‐matmul we need shape [89,4,31]
+            # J_hom_t = J_hom.transpose(1,2)         # [89,4,31]
+
+            # # Ts: [89,4,4]; batch matmul → [89,4,31]
+            # J_tr_hom_t = Ts @ J_hom_t              # [89,4,31]
+
+            # # back to [89,31,4]
+            # J_tr_hom = J_tr_hom_t.transpose(1,2)   # [89,31,4]
+
+            # # drop the homogeneous 1s → [89,31,3]
+            # J_local = J_tr_hom[..., :3]
+
+            # J_init = joints3d_init.squeeze(0)
+
+            # # make homogeneous coords: [89,31,4]
+            # ones = torch.ones(J_init.shape[0], J_init.shape[1], 1, device=J_init.device, dtype=J_init.dtype)
+            # J_hom_init = torch.cat([J_init, ones], dim=-1)   # [89,31,4]
+
+            # # for batch‐matmul we need shape [89,4,31]
+            # J_hom_init_t = J_hom_init.transpose(1,2)         # [89,4,31]
+
+            # # Ts: [89,4,4]; batch matmul → [89,4,31]
+            # J_tr_hom_init_t = extrinsics_initial[window[0]:window[1]+1] @ J_hom_init_t              # [89,4,31]
+
+            # # back to [89,31,4]
+            # J_tr_init_hom = J_tr_hom_init_t.transpose(1,2)   # [89,31,4]
+
+            # # drop the homogeneous 1s → [89,31,3]
+            # J_local_init = J_tr_init_hom[..., :3]
+
+            # local_pose_diff = gmof(J_local - J_local_init).mean()
+
 
             # rotation = Ts[:,:3,:3]      
             # translation = Ts[:,:3,3]
@@ -459,10 +522,14 @@ class CustomSMPLifyLoss(torch.nn.Module):
             # Compute the epipolar error
             epipolar_loss = compute_epipolar_error_relative(opt_rel, cam_intrinsics.squeeze(0), kp0_i, kp1_i)
             loss_dict['epipolar_loss'] = epipolar_loss
-            # loss_dict['reprojection'] = reprojection_error*100
+            # loss_dict['local_pose_diff'] = local_pose_diff*1000
+            # loss_dict['reprojection'] = reprojection_error*1000
             
             loss = sum(loss_dict.values())
             loss.backward()
+
+            # trans_window.grad.mul_(1000.0)
+
             return loss
         
         return closure

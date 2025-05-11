@@ -63,6 +63,18 @@ class CustomSMPLify():
         self.device = device
         self.res = res
 
+    def project_rotation_to_so3(self, R_batch):
+        U, _, Vt = torch.linalg.svd(R_batch)
+        R_proj = U @ Vt
+
+        # Handle improper rotations (det < 0)
+        dets = torch.det(R_proj)
+        mask = dets < 0
+        U[mask, :, -1] *= -1
+        R_proj[mask] = U[mask] @ Vt[mask]
+
+        return R_proj
+
     def fit(self, init_pred, keypoints, bbox, extrinsics, cam_intrinsics):
         print("Fitting SMPL parameters...")
         def to_params(param):
@@ -116,8 +128,12 @@ class CustomSMPLify():
         poses_root_world = init_pred['poses_root_world'].clone()
 
         rot = extrinsics.squeeze(0)[:,:3,:3]
+        rot = self.project_rotation_to_so3(rot)
+
         t = extrinsics.squeeze(0)[ :, :3, 3]
-        c = -rot.transpose(1, 2) @ t.unsqueeze(-1)  # [T, 3, 1]
+        # c = -rot.transpose(1, 2) @ t.unsqueeze(-1)  # [T, 3, 1]
+        c = - torch.linalg.inv(rot) @ t.unsqueeze(-1)  # [T, 3, 1]
+
         c = c.squeeze(-1)  
 
         c = gaussian_smooth(c, kernel_size=51, sigma=10)
@@ -156,6 +172,7 @@ class CustomSMPLify():
 
         extrinsics = torch.from_numpy(np.eye(4)[None].repeat(pose.shape[0], axis=0)).float().to(self.device)
         Rmat = rotation_6d_to_matrix(params[3].detach())
+        Rmat = self.project_rotation_to_so3(Rmat)
         extrinsics[:, :3, :3] = Rmat
 
         c = params[4].detach().unsqueeze(-1)
@@ -168,27 +185,35 @@ class CustomSMPLify():
     def joint_optimization(self, init_pred, keypoints, bbox, extrinsics, cam_intrinsics, kp_windows, kp_tracks):
         print("Jointly optimizing SMPL and camera extrinsics ...")
         def to_params(param):
-            return param.requires_grad_(True)
-    
+            # return param.requires_grad_(True)
+            # return torch.nn.Parameter(param.detach().clone(), requires_grad=True)
+            return param.detach().clone().requires_grad_()
         pose = init_pred['poses_body'].clone()
-        transl_world = init_pred['trans_world'].clone()
+        trans_world = init_pred['trans_world'].clone()
         # poses_root_world = init_pred['poses_root_world'].clone()
         poses_root_world = matrix_to_rotation_6d(init_pred['poses_root_world'].clone())
         
         rot = extrinsics.squeeze(0)[:,:3,:3]
+        rot = self.project_rotation_to_so3(rot)
+
         t = extrinsics.squeeze(0)[ :, :3, 3]
-        c = -rot.transpose(1, 2) @ t.unsqueeze(-1)  # [T, 3, 1]
+        # c = -rot.transpose(1, 2) @ t.unsqueeze(-1)  # [T, 3, 1]
+        c = - torch.linalg.inv(rot) @ t.unsqueeze(-1)  # [T, 3, 1]
+
         c = c.squeeze(-1).contiguous()
         rot_6d = matrix_to_rotation_6d(rot)
 
         scale = torch.tensor([1.0]).to(self.device)
 
+        extrinsics_init = extrinsics.squeeze(0).clone()
+
         extrinsics_rel = compute_frame_relatives(extrinsics.squeeze(0).cpu().numpy())
         extrinsics_rel = torch.from_numpy(extrinsics_rel).float().to(self.device)
 
-        params = [to_params(transl_world), to_params(poses_root_world), to_params(pose), to_params(rot_6d), to_params(c), to_params(scale)]
-        # params = [to_params(transl_world), to_params(poses_root_world), to_params(pose), to_params(extrinsics_rel), extrinsics[0,0], to_params(scale)]
-        # params = [transl_world, poses_root_world, pose, extrinsics_rel, extrinsics[0,0], scale]
+
+
+        params = [to_params(trans_world), to_params(poses_root_world), to_params(pose), to_params(rot_6d), to_params(c), to_params(scale)]
+        # params = [trans_world, poses_root_world, pose, rot_6d, c, scale]
        
         # opt_params = [params[0]]
         # optimizer = torch.optim.LBFGS(
@@ -213,7 +238,6 @@ class CustomSMPLify():
         #     loss = optimizer.step(closure)
         #     msg = f'Loss: {loss.item():.1f}'
         #     j_bar.set_postfix_str(msg)
-
         # print(f"Final joint opt loss stage 1: {loss.item():.1f}")
 
         # opt_params = [params[3], params[4]]
@@ -233,32 +257,39 @@ class CustomSMPLify():
         #             joint_opt=2
         #             )
         
-        # for j in (j_bar := tqdm(range(10), leave=False)):
+        # for j in (j_bar := tqdm(range(self.num_steps), leave=False)):
         #     optimizer.zero_grad()
         #     loss = optimizer.step(closure_2)
         #     msg = f'Loss: {loss.item():.1f}'
         #     j_bar.set_postfix_str(msg)
-        
         # print(f"Final joint opt loss stage 2: {loss.item():.1f}")
+
+        params[0] = params[0].clone().detach()
+        params[1] = params[1].clone().detach()
+        params[2] = params[2].clone().detach()
+        params[3] = params[3].clone().detach()
+        params[4] = params[4].clone().detach()
+        params[5] = params[5].clone().detach()
+
+        #detach params
+        trans_world = params[0].clone()
+        poses_root_world = params[1].clone()
+        pose = params[2].clone()
+        rot_6d = params[3].clone()
+        c = params[4].clone()
+        scale = params[5].clone()
+
 
         K = cam_intrinsics.squeeze(0)
         kps0 = kp_tracks[0]
         kps1 = kp_tracks[1]
 
-        #detach params
-        transl_world = params[0].detach().clone()
-        poses_root_world = rotation_6d_to_matrix(params[1].detach())
-        pose = params[2].detach()
-        rot_6d = params[3].detach()
-        c = params[4].detach()
-        scale = params[5].detach()
-
         extrinsics = torch.from_numpy(np.eye(4)[None].repeat(pose.shape[0], axis=0)).float().to(self.device)
         Rmat = rotation_6d_to_matrix(rot_6d)
-        extrinsics[:, :3, :3] = Rmat
+
         c = c.unsqueeze(-1)
-        c_origin = c[0]
-        c = scale*(c - c_origin) + c_origin
+        # c_origin = c[0]
+        # c = scale*(c - c_origin) + c_origin
         t = (-Rmat @ c).squeeze(-1)
 
         extrinsics[:, :3, 3] = t
@@ -269,15 +300,21 @@ class CustomSMPLify():
         rel_all = compute_frame_relatives(extrinsics.cpu().numpy())
         rel_all = torch.from_numpy(rel_all).float().to(self.device)
 
+        T_smpl_cam = extrinsics.clone()[:,:3,:3]@trans_world.unsqueeze(-1) + extrinsics.clone()[:,:3,3].unsqueeze(-1)
+        T_smpl_cam = T_smpl_cam.squeeze(-1)
+
+        R_smpl = rotation_6d_to_matrix(poses_root_world).squeeze(1)
+        R_smpl_cam = extrinsics.clone()[:,:3,:3]@R_smpl
+
         for i, window in enumerate(kp_windows):
             # Get the current window's R and t
             print("Window: ", window)
             start = window[0]
             end = window[1]
             extrinsics_window = extrinsics[start:end+1]
+            rel = extrinsics_rel[start:end]
 
             if end - start > 10:
-                rel = extrinsics_rel[start:end]
                 T_start = extrinsics_window[0]
                 T_end = extrinsics_window[-1]
 
@@ -301,10 +338,8 @@ class CustomSMPLify():
 
                 if error_i < 100:
 
-                    # params = [to_params(transl_world), to_params(poses_root_world), to_params(pose), to_params(rel), extrinsics[0,0], to_params(scale)]
                     opt_rel = to_params(rel)
-
-                    opt_params = [opt_rel]#, to_params(transl_world)]
+                    opt_params = [opt_rel]
                     optimizer = torch.optim.LBFGS(
                         opt_params, 
                         lr=self.lr/2, 
@@ -322,17 +357,17 @@ class CustomSMPLify():
                         keypoints,
                         bbox,
                         window,
-                        extrinsics[start]
+                        extrinsics[start],
+                        extrinsics_init,
                     )
                     
-                    for j in (j_bar := tqdm(range(5), leave=False)):
+                    for j in (j_bar := tqdm(range(self.num_steps), leave=False)):
                         optimizer.zero_grad()
                         loss = optimizer.step(closure_epi)
                         msg = f'Loss: {loss.item():.1f}'
                         j_bar.set_postfix_str(msg)
                     
                     rel = opt_rel.detach()
-                    transl_world = transl_world.detach()
                 else:
                     print("Error too large, skipping", error_i.item())
             else:
@@ -340,39 +375,79 @@ class CustomSMPLify():
                 print("Segemtn to small, skipping")
 
             for k in range(window[0], window[1]):
-                extrinsics_res[k+1] = rel[k - window[0]] @ extrinsics_res[k]
-                # transl_world_res[k+1] = transl_world[k]
+                extrinsics_res[k+1] = (rel[k - window[0]] @ extrinsics_res[k])
 
-        init_pred['trans_world'] = transl_world
-        init_pred['poses_root_world'] = poses_root_world
+        rot_res = extrinsics_res[:, :3, :3].clone()
+        rot_res = self.project_rotation_to_so3(rot_res)
+        extrinsics_res[:, :3, :3] = rot_res
 
-        init_pred = W_MPJPE_align_sequentially(init_pred, bbox, self.res, cam_intrinsics, self.smpl, self.device, extrinsics_res)
+        world2_cam = extrinsics_res.clone()
+        cam2_world = torch.linalg.inv(world2_cam)
+        ones = torch.ones((T_smpl_cam.shape[0], 1), device=T_smpl_cam.device)  # shape [1917, 1]
+        T_smpl_cam_hom = torch.cat([T_smpl_cam, ones], dim=1) 
+        trans_world = (cam2_world@T_smpl_cam_hom.unsqueeze(-1)).squeeze(-1)
 
+        trans_world = trans_world[:, :3].clone().detach()
 
-        pose = init_pred['poses_body'].clone()
-        transl_world = init_pred['trans_world'].clone()
-        poses_root_world = init_pred['poses_root_world'].clone()
-        # poses_root_world = matrix_to_rotation_6d(init_pred['poses_root_world'].clone())
-
-        # get params again as before
         rot = extrinsics_res[:, :3, :3].clone()
         t = extrinsics_res[ :, :3, 3].clone()
-        c = -rot.transpose(1, 2) @ t.unsqueeze(-1)  # [T, 3, 1]
-        c = c.squeeze(-1).contiguous()
+        c = - torch.linalg.inv(rot) @ t.unsqueeze(-1)  # [T, 3, 1]
+        # c = - rot.transpose(1,2) @ t.unsqueeze(-1)  # [T, 3, 1]
+        c = c.squeeze(-1)
         rot_6d = matrix_to_rotation_6d(rot)
-        scale = torch.tensor([1.0]).to(self.device)
-        poses_root_world = matrix_to_rotation_6d(poses_root_world)
-        params = [to_params(transl_world), to_params(poses_root_world), to_params(pose), to_params(rot_6d), to_params(c), to_params(scale)]
-       
-        # opt_params = [params[0]]
 
+        # params[0] = params[0].clone().detach()
+        # params[1] = params[1].clone().detach()
+        # params[2] = params[2].clone().detach()
+        # params[3] = params[3].clone().detach()
+        # params[4] = params[4].clone().detach()
+        # params[5] = params[5].clone().detach()
+
+        # params[0] = to_params(params[0])
+        # params[1] = to_params(params[1])
+        # params[2] = to_params(params[2])
+        # params[3] = to_params(rot_6d)
+        # params[4] = to_params(c)
+        # params[5] = to_params(params[5])
+
+        params = [to_params(trans_world), poses_root_world, pose, rot_6d, c, scale]
+        # params = [trans_world, poses_root_world, pose, rot_6d, c, to_params(scale)]
+
+        opt_params = [params[0]]
+        optimizer = torch.optim.LBFGS(
+            opt_params, 
+            lr=self.lr, 
+            max_iter=self.num_iters, 
+            line_search_fn='strong_wolfe')
+        loss_fn_4 = CustomSMPLifyLoss(self.res, cam_intrinsics, device=self.device)
+
+        closure_4 = loss_fn_4.create_joint_opt_closure(optimizer,
+                    self.smpl, 
+                    params,
+                    bbox,
+                    keypoints,
+                    init_pred,
+                    extrinsics_res,
+                    joint_opt=4,
+                    )
+        
+        # for j in (j_bar := tqdm(range(10), leave=False)):
+        #     optimizer.zero_grad()
+        #     loss = optimizer.step(closure_4)
+        #     msg = f'Loss: {loss.item():.1f}'
+        #     j_bar.set_postfix_str(msg)
+        # print(f"Loss stage 4: {loss.item():.1f}")
+        # params[0] = params[0].clone().detach()
+
+        # params[1] = to_params(params[1])
+        # opt_params = [params[1]]
         # optimizer = torch.optim.LBFGS(
         #     opt_params, 
         #     lr=self.lr, 
         #     max_iter=self.num_iters, 
         #     line_search_fn='strong_wolfe')
         
-        # closure_4 = loss_fn.create_joint_opt_closure(optimizer,
+        # closure = loss_fn.create_joint_opt_closure(optimizer,
         #             self.smpl, 
         #             params,
         #             bbox,
@@ -381,14 +456,12 @@ class CustomSMPLify():
         #             joint_opt=4
         #             )
         
-        # for j in (j_bar := tqdm(range(self.num_steps), leave=False)):
+        # for j in (j_bar := tqdm(range(10), leave=False)):
         #     optimizer.zero_grad()
-        #     loss = optimizer.step(closure_4)
+        #     loss = optimizer.step(closure)
         #     msg = f'Loss: {loss.item():.1f}'
         #     j_bar.set_postfix_str(msg)
-
-        # print(f"Final joint opt loss stage 4: {loss.item():.1f}")
-
+        # print(f"Final loss stage 4: {loss.item():.1f}")
 
         # opt_params = [params[0], params[3], params[4], params[5]]
 
@@ -407,35 +480,32 @@ class CustomSMPLify():
         #             joint_opt=5
         #             )
         
-        # for j in (j_bar := tqdm(range(self.num_steps), leave=False)):
+        # for j in (j_bar := tqdm(range(50), leave=False)):
         #     optimizer.zero_grad()
         #     loss = optimizer.step(closure_5)
         #     msg = f'Loss: {loss.item():.1f}'
         #     j_bar.set_postfix_str(msg)
-        
         # print(f"Final joint opt loss stage 5: {loss.item():.1f}")
 
-
-        # init_pred['optimized_cam'] = extrinsics_res
-        init_pred['trans_world'] = params[0].detach()
-        init_pred['poses_root_world'] = rotation_6d_to_matrix(params[1].detach())
-        init_pred['poses_body'] = params[2].detach()
+        init_pred['trans_world'] = params[0].detach().clone()
+        init_pred['poses_root_world'] = rotation_6d_to_matrix(params[1].detach()).clone()
+        init_pred['poses_body'] = params[2].detach().clone()
+        init_pred['optimized_cam_t'] = extrinsics_res.clone()
 
         ext = torch.from_numpy(np.eye(4)[None].repeat(pose.shape[0], axis=0)).float().to(self.device)
         Rmat = rotation_6d_to_matrix(params[3].detach())
-        ext[:, :3, :3] = Rmat
-        # ext[:, :3, :3] = rot
+        Rmat = self.project_rotation_to_so3(Rmat)
         c = params[4].detach().unsqueeze(-1)
-        # c_origin = c[0]
+        # # c_origin = c[0]
         # scale = params[5].detach()
         # print("Scale: ", scale)
-        # c = scale*(c - c_origin) + c_origin
+        # # c = scale*(c - c_origin) + c_origin
 
         t = (-Rmat @ c).squeeze(-1)
-        # t = (-rot @ c).squeeze(-1)
         ext[:, :3, 3] = t
+        ext[:, :3, :3] = Rmat
 
-        init_pred['optimized_cam'] = extrinsics_res
+        init_pred['optimized_cam'] = extrinsics_res.clone()
         
         return init_pred
         
@@ -472,7 +542,7 @@ def optimization_baseline(init_pred, keypoints, bbox,
                                                   length, res, kp_windows, kp_tracks):
  
     # Create an instance of CustomSMPLify
-    s = 20
+    s = 10
     custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=s, res=res, device=device)
     
     # get transl and root_pose in gt world frame
