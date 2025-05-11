@@ -134,7 +134,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         self.cam_intrinsics = cam_intrinsics
         self.extrinsics = extrinsics
         
-    def forward(self, joints_2d, params, input_keypoints, bbox, init_pred, joint_opt, rotation=None, c=None, joints3d_cam=None, joints3d_cam_pred=None,
+    def forward(self, joints_2d, params, input_keypoints, bbox, init_pred, joint_opt, c=None, joints3d_cam=None, joints3d_cam_pred=None,
                 reprojection_weight=1., regularize_weight=60.0, 
                 consistency_weight=10.0, sprior_weight=0.04, 
                 smooth_weight=100, sigma=100):
@@ -148,7 +148,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
         reprojection_error = ((reprojection_error * joints_conf) / scale).mean()
 
         # Loss 2. Regularization term
-        pred_pose_6d = matrix_to_rotation_6d(params[2])
+        # pred_pose_6d = matrix_to_rotation_6d()
         # init_pred_pose_6d = matrix_to_rotation_6d(init_pred['poses_body'])
         # regularize_error = torch.linalg.norm(params[2] - init_pred['poses_body'], dim=-1).mean()
         # regularize_error = torch.linalg.norm(pred_pose_6d-init_pred_pose_6d, dim=-1).mean()
@@ -159,10 +159,8 @@ class CustomSMPLifyLoss(torch.nn.Module):
         # shape_error = sprior_weight * sprior_error + consistency_weight * consistency_error
         
         # Loss 4. Smooth loss
-        pose_diff = compute_jitter_custom(pred_pose_6d).mean()
+        pose_diff = compute_jitter_custom(params[2]).mean()
         global_orient_diff = compute_jitter_custom(params[1].squeeze(1)).mean()
-
-        rotation_6d = matrix_to_rotation_6d(rotation)
 
         if joint_opt is not None:
 
@@ -196,7 +194,6 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 # gt = joblib.load("/mnt/hdd/emdb_dataset/P4/35_indoor_walk/P4_35_indoor_walk_data.pkl")
 
                 loss = {
-                    # 'reprojection': reprojection_weight * (reprojection_error),
                     'velocity': 100000* vel_loss,
                 }
 
@@ -205,21 +202,13 @@ class CustomSMPLifyLoss(torch.nn.Module):
                     'reprojection': reprojection_weight * (reprojection_error)
                 }
 
-            elif joint_opt == 4:
-                trans_diff = compute_jitter_custom(params[0]).mean()
-                # reprojection_error = gmof(pred_keypoints - input_keypoints[..., :-1], sigma)
-                # reprojection_error = ((reprojection_error * joints_conf) / scale).sum()
-                loss = {
-                    'reprojection': reprojection_weight * (reprojection_error),
-                    # 'smooth': 1 * trans_diff,
-                }
 
-            elif joint_opt == 5:
+            elif joint_opt == 3:
                 # rotation = rotation_6d_to_matrix(params[3])
                 trans_diff = compute_jitter_custom(params[0]).mean() # translation in global coords
 
                 cam_c_diff = compute_jitter_custom(c).mean()
-                cam_R_diff = compute_jitter_custom(rotation_6d).mean()
+                cam_R_diff = compute_jitter_custom(params[3]).mean()
 
                 smooth_error = trans_diff + cam_c_diff + cam_R_diff 
                 
@@ -235,9 +224,18 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 loss = {
                     'reprojection': reprojection_weight * (reprojection_error),
                     'smooth': smooth_weight * smooth_error,
-                    # 'velocity': 10000* vel_loss,
+                    'velocity': 10000* vel_loss,
                 }
 
+            elif joint_opt == 4:
+
+                smooth_error = global_orient_diff + pose_diff
+                
+                loss = {
+                    'reprojection': reprojection_weight * (reprojection_error),
+                    'smooth': smooth_weight * smooth_error,
+                    # 'velocity': 10000* vel_loss,
+                }
         else:
             trans_diff = compute_jitter_custom(params[0]).mean() # translation in global coords
 
@@ -370,7 +368,6 @@ class CustomSMPLifyLoss(torch.nn.Module):
                        bbox,
                        input_keypoints,
                        init_pred,
-                       ext=None,
                        joint_opt=None
                        ):
         
@@ -385,21 +382,14 @@ class CustomSMPLifyLoss(torch.nn.Module):
 
             scale = params[5]
 
-            if ext is not None:
-                # get rotation and translation from extrinsics matrix
-                rotation = ext[:, :3, :3]
-                translation = ext[:, :3, 3]
-                c = - rotation @ translation.unsqueeze(-1)
-                c = c.squeeze(-1)
-            else:
-                rotation = rotation_6d_to_matrix(params[3])
-                c = params[4].unsqueeze(-1)
-            # c_origin = c[0]
-            # scale = params[5]
-            # c = scale*(c - c_origin) + c_origin
+            rotation = rotation_6d_to_matrix(params[3])
+            c = params[4].unsqueeze(-1)
+            c_origin = c[0]
+            scale = params[5]
+            c = scale*(c - c_origin) + c_origin
 
-                t = -rotation @ c        
-                translation = t.squeeze(-1)  
+            t = -rotation @ c        
+            translation = t.squeeze(-1)  
 
             full_joints2d = full_perspective_projection(
                 joints3d,
@@ -408,7 +398,7 @@ class CustomSMPLifyLoss(torch.nn.Module):
                 translation=translation,
             )
 
-            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joint_opt, rotation, c)
+            loss_dict = self.forward(full_joints2d, params, input_keypoints, bbox, init_pred, joint_opt, c=c)
             loss = sum(loss_dict.values())
             loss.backward()
             return loss
