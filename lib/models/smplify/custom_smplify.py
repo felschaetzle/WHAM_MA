@@ -86,9 +86,9 @@ class CustomSMPLify():
         poses_root_world = init_pred['poses_root_world'].clone()
         
         params = [to_params(transl_world), to_params(poses_root_world), to_params(pose)]
-        # optim_params = [params[0]]
+        optim_params = [params[0]]
         optimizer = torch.optim.LBFGS(
-            params, 
+            optim_params, 
             lr=self.lr, 
             max_iter=self.num_iters, 
             line_search_fn='strong_wolfe')
@@ -303,7 +303,7 @@ class CustomSMPLify():
 
         # R_smpl = rotation_6d_to_matrix(poses_root_world).squeeze(1)
         # R_smpl_cam = extrinsics.clone()[:,:3,:3]@R_smpl
-
+        counter = 0
         for i, window in enumerate(kp_windows):
             # Get the current window's R and t
             print("Window: ", window)
@@ -334,8 +334,8 @@ class CustomSMPLify():
 
                 error_i = epi_keep.mean()
 
-                if error_i < 100:
-
+                if error_i < 10:
+                    counter += 1
                     opt_rel = to_params(rel)
                     opt_params = [opt_rel]
                     optimizer = torch.optim.LBFGS(
@@ -396,6 +396,7 @@ class CustomSMPLify():
         scale = torch.tensor([1.0]).to(self.device)
 
         params = [trans_world, poses_root_world, pose, rot_6d, c, scale]
+
         params[0] = to_params(params[0])
 
         opt_params = [params[0]]
@@ -525,6 +526,7 @@ class CustomSMPLify():
 
         # init_pred['optimized_cam'] = extrinsics_res.clone()
         init_pred['optimized_cam'] = ext.clone()
+        init_pred['num_windows_used_epipolar'] = counter
         
         return init_pred
         
@@ -556,6 +558,34 @@ def optimization_upper_bound(init_pred, keypoints, bbox,
     return optimized_pred_window
 
 def optimization_baseline(init_pred, keypoints, bbox,
+                                                  extrinsics, cam_intrinsics,
+                                                  smpl, device,
+                                                  length, res):
+ 
+    # Create an instance of CustomSMPLify
+    s = 50
+    custom_smplify = CustomSMPLify(smpl=smpl, lr=1e-2, num_iters=5, num_steps=s, res=res, device=device)
+    
+    # get transl and root_pose in gt world frame
+    init_pred = W_MPJPE_align_sequentially(init_pred, bbox, res, cam_intrinsics, smpl, device, extrinsics)
+
+    init_pred['trans_world_init'] = init_pred['trans_world'].clone()
+    init_pred['poses_root_world_init'] = init_pred['poses_root_world'].clone()
+    
+    # Copy the initial predictions to update them progressively.
+    current_pred = {k: v.clone() for k, v in init_pred.items()}
+    
+    optimized_pred_window = custom_smplify.fit(
+        current_pred,
+        keypoints,
+        bbox,
+        extrinsics,
+        cam_intrinsics,
+    )
+
+    return optimized_pred_window
+
+def optimization_method(init_pred, keypoints, bbox,
                                                   extrinsics, cam_intrinsics,
                                                   smpl, device,
                                                   length, res, kp_windows, kp_tracks):
