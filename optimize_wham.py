@@ -601,7 +601,7 @@ def run(cfg,
         dpvo_extrinsics = dpvo_extrinsics[gt_data['good_frames_mask']].unsqueeze(0)
         
         # classify the correct camera for each frame
-        extrinsics_init, kp_windows, kp0, kp1 = extrinsic_classifier(args, wham_extrinsics.squeeze(0).cpu().numpy(), dpvo_extrinsics.squeeze(0).cpu().numpy())
+        extrinsics_init, kp_windows, kp0, kp1, _ = extrinsic_classifier(args, wham_extrinsics.squeeze(0).cpu().numpy(), dpvo_extrinsics.squeeze(0).cpu().numpy())
         extrinsics_init = torch.from_numpy(extrinsics_init).float().to(cfg.DEVICE).unsqueeze(0)
         kp_tracks = (kp0, kp1)
         results['extrinsics_init'] = extrinsics_init.clone().squeeze(0).cpu().numpy()
